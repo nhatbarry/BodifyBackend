@@ -77,3 +77,5 @@ logs/
 # Alembic (nếu sau này dùng migration)
 # ============================================================
 # alembic/versions/*.pyc
+
+supbase
