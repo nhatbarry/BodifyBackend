@@ -78,4 +78,5 @@ logs/
 # ============================================================
 # alembic/versions/*.pyc
 
-supbase
+r2 upload
+media/
