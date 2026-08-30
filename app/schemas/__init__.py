@@ -1,3 +1,12 @@
+from app.schemas.auth import (
+    AuthUser,
+    LoginRequest,
+    MeResponse,
+    RefreshRequest,
+    RegisterRequest,
+    RegisterResponse,
+    TokenResponse,
+)
 from app.schemas.body_metrics import (
     BodyMetricBase,
     BodyMetricCreate,
@@ -50,14 +59,16 @@ from app.schemas.user_profiles import (
     UserProfileRead,
     UserProfileUpdate,
 )
-from app.schemas.users import (
-    UserBase,
-    UserCreate,
-    UserRead,
-    UserUpdate,
-)
+from app.schemas.users import UserRead
 
 __all__ = [
+    "AuthUser",
+    "LoginRequest",
+    "MeResponse",
+    "RefreshRequest",
+    "RegisterRequest",
+    "RegisterResponse",
+    "TokenResponse",
     "BodyMetricBase",
     "BodyMetricCreate",
     "BodyMetricRead",
@@ -88,10 +99,7 @@ __all__ = [
     "MuscleGroupCreate",
     "MuscleGroupRead",
     "MuscleGroupUpdate",
-    "UserBase",
-    "UserCreate",
     "UserRead",
-    "UserUpdate",
     "UserProfileBase",
     "UserProfileCreate",
     "UserProfileRead",
