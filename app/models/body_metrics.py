@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import uuid
 from datetime import datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
-from sqlalchemy import BigInteger, CheckConstraint, DateTime, ForeignKey, Index, Numeric, func
+from sqlalchemy import BigInteger, CheckConstraint, DateTime, Index, Numeric, func
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -23,11 +25,7 @@ class BodyMetric(Base):
 
     metric_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
 
-    user_id: Mapped[int] = mapped_column(
-        BigInteger,
-        ForeignKey("users.user_id", ondelete="CASCADE", name="fk_body_metrics_user"),
-        nullable=False,
-    )
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
 
     height_cm: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
     weight_kg: Mapped[Decimal | None] = mapped_column(Numeric(6, 2))
@@ -35,4 +33,9 @@ class BodyMetric(Base):
     recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
-    user: Mapped["User"] = relationship(back_populates="body_metrics")
+    user: Mapped["User"] = relationship(
+        "User",
+        primaryjoin="foreign(BodyMetric.user_id) == User.id",
+        viewonly=True,
+        uselist=False,
+    )

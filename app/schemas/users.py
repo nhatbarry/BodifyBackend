@@ -1,30 +1,20 @@
 from __future__ import annotations
 
+import uuid
 from datetime import datetime
-from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
-
-AuthProvider = Literal["local", "google"]
+from pydantic import BaseModel, ConfigDict, EmailStr
 
 
-class UserBase(BaseModel):
-    email: EmailStr = Field(max_length=255)
-    username: str | None = Field(default=None, max_length=100)
-    auth_provider: AuthProvider = "local"
+class UserRead(BaseModel):
+    """Read-only view of a Supabase Auth user (auth.users).
 
+    There is no Create/Update schema here - accounts are created/managed
+    entirely through the Supabase Auth API, not this backend.
+    """
 
-class UserCreate(UserBase):
-    pass
-
-
-class UserUpdate(BaseModel):
-    username: str | None = Field(default=None, max_length=100)
-
-
-class UserRead(UserBase):
     model_config = ConfigDict(from_attributes=True)
 
-    user_id: int
-    created_at: datetime
-    updated_at: datetime
+    id: uuid.UUID
+    email: EmailStr | None
+    created_at: datetime | None

@@ -9,6 +9,13 @@ BEGIN;
 -- ============================================================
 -- 1. USERS
 -- ============================================================
+-- NOTE (superseded): the live database does NOT have this table.
+-- Auth is handled by Supabase Auth (auth.users, UUID primary key).
+-- Every user_id column below (user_profiles, body_metrics, and all
+-- other phase-1+ tables) is UUID, referencing auth.users(id), not
+-- this BIGSERIAL table. This block is kept only as historical
+-- record of the original design and is not applied to the DB.
+-- ============================================================
 
 CREATE TABLE users (
     user_id BIGSERIAL PRIMARY KEY,
@@ -29,11 +36,14 @@ CREATE TABLE users (
 -- ============================================================
 -- 2. USER PROFILES
 -- ============================================================
+-- user_id is UUID in the live DB (references Supabase auth.users.id).
+-- role lives here (not on a local users table) since profile is the
+-- table this backend actually owns.
 
 CREATE TABLE user_profiles (
     profile_id BIGSERIAL PRIMARY KEY,
 
-    user_id BIGINT NOT NULL UNIQUE,
+    user_id UUID NOT NULL UNIQUE,
 
     name VARCHAR(150) NOT NULL,
 
@@ -43,13 +53,18 @@ CREATE TABLE user_profiles (
 
     gender VARCHAR(30),
 
+    role VARCHAR(20) NOT NULL DEFAULT 'user',
+
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
     CONSTRAINT fk_user_profiles_user
         FOREIGN KEY (user_id)
-        REFERENCES users(user_id)
-        ON DELETE CASCADE
+        REFERENCES auth.users(id)
+        ON DELETE CASCADE,
+
+    CONSTRAINT chk_user_profiles_role
+        CHECK (role IN ('user', 'admin'))
 );
 
 
