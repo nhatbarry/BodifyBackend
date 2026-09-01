@@ -36,6 +36,22 @@ class CurrentUser:
     role: str
 
 
+def require_bearer(
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)] = None,
+) -> HTTPAuthorizationCredentials:
+    """The raw token, for routes that hand it to Supabase rather than decode it."""
+    if credentials is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing bearer token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return credentials
+
+
+BearerCredentialsDep = Annotated[HTTPAuthorizationCredentials, Depends(require_bearer)]
+
+
 def get_current_user(
     db: DbSession,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)] = None,

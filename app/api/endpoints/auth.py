@@ -1,13 +1,14 @@
 import uuid
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Response, status
 from supabase_auth.errors import AuthApiError, AuthError
 
-from app.api.dependencies import CurrentUserDep, DbSession
+from app.api.dependencies import BearerCredentialsDep, CurrentUserDep, DbSession
 from app.core.supabase_client import get_supabase, get_supabase_admin
 from app.models.user_profiles import UserProfile
 from app.schemas.auth import (
     AuthUser,
+    ForgotPasswordRequest,
     LoginRequest,
     MeResponse,
     RefreshRequest,
@@ -118,6 +119,37 @@ def refresh(payload: RefreshRequest) -> TokenResponse:
             detail="Invalid refresh token",
         )
     return token
+
+
+@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+def logout(credentials: BearerCredentialsDep) -> Response:
+    """Revoke the caller's Supabase session.
+
+    The client must still drop its stored tokens: the access token stays
+    cryptographically valid until it expires.
+    """
+    try:
+        # Revoking someone's session is an admin action: the publishable key
+        # cannot do it, so this goes through the service_role client.
+        get_supabase_admin().auth.admin.sign_out(credentials.credentials)
+    except (AuthApiError, AuthError):
+        # An already-invalid session is the state the caller asked for.
+        pass
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/forgot-password", status_code=status.HTTP_202_ACCEPTED)
+def forgot_password(payload: ForgotPasswordRequest) -> dict[str, str]:
+    """Send a password reset email.
+
+    Always answers the same way: telling an anonymous caller whether an address
+    is registered would turn this into an account-enumeration oracle.
+    """
+    try:
+        get_supabase().auth.reset_password_email(payload.email)
+    except (AuthApiError, AuthError):
+        pass
+    return {"message": "If that email is registered, a reset link has been sent."}
 
 
 @router.get("/me", response_model=MeResponse)

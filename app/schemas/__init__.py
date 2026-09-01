@@ -1,5 +1,6 @@
 from app.schemas.auth import (
     AuthUser,
+    ForgotPasswordRequest,
     LoginRequest,
     MeResponse,
     RefreshRequest,
@@ -7,101 +8,47 @@ from app.schemas.auth import (
     RegisterResponse,
     TokenResponse,
 )
-from app.schemas.body_metrics import (
-    BodyMetricBase,
-    BodyMetricCreate,
-    BodyMetricRead,
-    BodyMetricUpdate,
+from app.schemas.body_metrics import BodyMetricCreate, BodyMetricRead
+from app.schemas.common import Page
+from app.schemas.equipment import EquipmentRead
+from app.schemas.exercise_catalog import (
+    ExerciseDetail,
+    ExerciseEquipmentItem,
+    ExerciseFilters,
+    ExerciseListItem,
+    ExerciseMediaUrls,
+    ExerciseMuscleItem,
+    FilterOption,
 )
-from app.schemas.equipment import (
-    EquipmentBase,
-    EquipmentCreate,
-    EquipmentRead,
-    EquipmentUpdate,
-)
-from app.schemas.exercise_equipment import (
-    ExerciseEquipmentCreate,
-    ExerciseEquipmentRead,
-)
-from app.schemas.exercise_media import (
-    ExerciseMediaBase,
-    ExerciseMediaCreate,
-    ExerciseMediaRead,
-    ExerciseMediaUpdate,
-)
-from app.schemas.exercise_muscles import (
-    ExerciseMuscleBase,
-    ExerciseMuscleCreate,
-    ExerciseMuscleRead,
-    ExerciseMuscleUpdate,
-)
-from app.schemas.exercise_translations import (
-    ExerciseTranslationBase,
-    ExerciseTranslationCreate,
-    ExerciseTranslationRead,
-    ExerciseTranslationUpdate,
-)
-from app.schemas.exercises import (
-    ExerciseBase,
-    ExerciseCreate,
-    ExerciseRead,
-    ExerciseUpdate,
-)
-from app.schemas.muscle_groups import (
-    MuscleGroupBase,
-    MuscleGroupCreate,
-    MuscleGroupRead,
-    MuscleGroupUpdate,
-)
-from app.schemas.user_profiles import (
-    UserProfileBase,
-    UserProfileCreate,
-    UserProfileRead,
-    UserProfileUpdate,
-)
+from app.schemas.muscle_groups import MuscleGroupRead
+from app.schemas.profile import ProfileRead, ProfileUpdate
+from app.schemas.user_profiles import UserProfileRead, UserRole
 from app.schemas.users import UserRead
 
 __all__ = [
     "AuthUser",
+    "BodyMetricCreate",
+    "BodyMetricRead",
+    "EquipmentRead",
+    "ExerciseDetail",
+    "ExerciseEquipmentItem",
+    "ExerciseFilters",
+    "ExerciseListItem",
+    "ExerciseMediaUrls",
+    "ExerciseMuscleItem",
+    "FilterOption",
+    "ForgotPasswordRequest",
     "LoginRequest",
     "MeResponse",
+    "MuscleGroupRead",
+    "Page",
+    "ProfileRead",
+    "ProfileUpdate",
     "RefreshRequest",
     "RegisterRequest",
     "RegisterResponse",
     "TokenResponse",
-    "BodyMetricBase",
-    "BodyMetricCreate",
-    "BodyMetricRead",
-    "BodyMetricUpdate",
-    "EquipmentBase",
-    "EquipmentCreate",
-    "EquipmentRead",
-    "EquipmentUpdate",
-    "ExerciseBase",
-    "ExerciseCreate",
-    "ExerciseRead",
-    "ExerciseUpdate",
-    "ExerciseEquipmentCreate",
-    "ExerciseEquipmentRead",
-    "ExerciseMediaBase",
-    "ExerciseMediaCreate",
-    "ExerciseMediaRead",
-    "ExerciseMediaUpdate",
-    "ExerciseMuscleBase",
-    "ExerciseMuscleCreate",
-    "ExerciseMuscleRead",
-    "ExerciseMuscleUpdate",
-    "ExerciseTranslationBase",
-    "ExerciseTranslationCreate",
-    "ExerciseTranslationRead",
-    "ExerciseTranslationUpdate",
-    "MuscleGroupBase",
-    "MuscleGroupCreate",
-    "MuscleGroupRead",
-    "MuscleGroupUpdate",
-    "UserRead",
-    "UserProfileBase",
-    "UserProfileCreate",
     "UserProfileRead",
-    "UserProfileUpdate",
+    "UserRead",
+    "UserRole",
 ]
