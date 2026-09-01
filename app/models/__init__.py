@@ -6,6 +6,7 @@ from app.models.exercise_muscles import ExerciseMuscle
 from app.models.exercise_translations import ExerciseTranslation
 from app.models.exercises import Exercise
 from app.models.muscle_groups import MuscleGroup
+from app.models.term_translations import TermTranslation
 from app.models.user_profiles import UserProfile
 from app.models.users import User
 
@@ -18,6 +19,7 @@ __all__ = [
     "ExerciseMuscle",
     "ExerciseTranslation",
     "MuscleGroup",
+    "TermTranslation",
     "User",
     "UserProfile",
 ]

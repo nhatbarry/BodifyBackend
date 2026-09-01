@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import BigInteger, CheckConstraint, DateTime, String, func
+from sqlalchemy import DateTime, String
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -14,27 +16,30 @@ if TYPE_CHECKING:
 
 
 class User(Base):
+    """Read-only mapping to Supabase Auth's auth.users.
+
+    Supabase Auth owns this table's lifecycle (signup, password reset,
+    deletion). Never insert/update/delete through this model - all writes
+    go through the Supabase Auth API/SDK. This mapping exists only so the
+    backend can SELECT/JOIN auth fields (e.g. email) alongside its own
+    tables without an extra call to Supabase's API.
+    """
+
     __tablename__ = "users"
-    __table_args__ = (
-        CheckConstraint(
-            "auth_provider IN ('local', 'google')",
-            name="chk_users_auth_provider",
-        ),
-    )
+    __table_args__ = {"schema": "auth"}
 
-    user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-
-    email: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
-    username: Mapped[str | None] = mapped_column(String(100), unique=True)
-
-    auth_provider: Mapped[str] = mapped_column(String(30), nullable=False, server_default="local")
-
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    email: Mapped[str | None] = mapped_column(String)
+    created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     profile: Mapped["UserProfile | None"] = relationship(
-        back_populates="user", uselist=False, cascade="all, delete-orphan"
+        "UserProfile",
+        primaryjoin="User.id == foreign(UserProfile.user_id)",
+        viewonly=True,
+        uselist=False,
     )
     body_metrics: Mapped[list["BodyMetric"]] = relationship(
-        back_populates="user", cascade="all, delete-orphan"
+        "BodyMetric",
+        primaryjoin="User.id == foreign(BodyMetric.user_id)",
+        viewonly=True,
     )
