@@ -29,6 +29,10 @@ class ExerciseListItem(BaseModel):
     name: str | None = None
     language: str | None = None
 
+    # A small variant sized for list rows - roughly a tenth of the thumbnail.
+    # Null until the icon has been uploaded for that exercise, so clients must
+    # fall back to thumbnail_url rather than assume it is there.
+    icon_url: str | None = None
     thumbnail_url: str | None = None
 
     exercise_type: str | None = None
