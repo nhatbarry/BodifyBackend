@@ -8,3 +8,5 @@ email-validator
 minio
 boto3
 supabase
+pytest
+httpx

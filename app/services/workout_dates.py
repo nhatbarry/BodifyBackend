@@ -49,6 +49,80 @@ def find_day_for_date(
     )
 
 
+def create_day_for_date(
+    db: Session,
+    plan: WorkoutPlan,
+    user_id: uuid.UUID,
+    on_date: date,
+    *,
+    is_rest_day: bool = False,
+) -> WorkoutDay:
+    """Add a day to the plan and pin it to one calendar date.
+
+    Two rows, always together: a `workout_days` row for the content and a
+    `schedules` row for the date. A day without its schedule would be
+    invisible on the calendar and unreachable by date.
+
+    The name is the ISO date because the screen formats the date itself - it
+    is a stable identifier, not a label anybody reads.
+    """
+    lock_parent(db, WorkoutPlan.plan_id, plan.plan_id)
+    day = WorkoutDay(
+        plan_id=plan.plan_id,
+        name=on_date.isoformat(),
+        day_order=next_order(
+            db, WorkoutDay.day_order, WorkoutDay.plan_id == plan.plan_id
+        ),
+        is_rest_day=is_rest_day,
+    )
+    db.add(day)
+    db.flush()
+    db.add(
+        Schedule(
+            user_id=user_id,
+            workout_day_id=day.workout_day_id,
+            scheduled_date=on_date,
+        )
+    )
+    return day
+
+
+def set_date_rest_day(
+    db: Session,
+    plan: WorkoutPlan,
+    user_id: uuid.UUID,
+    on_date: date,
+    is_rest_day: bool,
+) -> WorkoutDay | None:
+    """Mark a calendar date as a planned rest, or stop marking it.
+
+    A rest day is a row, not an absence: the calendar has to tell "resting
+    today" from "nothing scheduled yet", and only a row can carry that.
+
+    Un-ticking leaves a day with no exercises and no meaning, so the day is
+    removed - the same rule that removes a date when its last exercise goes.
+    """
+    day = find_day_for_date(db, plan.plan_id, on_date)
+
+    if is_rest_day:
+        if day is None:
+            return create_day_for_date(db, plan, user_id, on_date, is_rest_day=True)
+        if day.exercises:
+            # Flipping the flag would strand exercises on a day meant to have
+            # none. Make the caller clear them rather than deleting their work.
+            raise ValueError("day has exercises")
+        day.is_rest_day = True
+        return day
+
+    if day is None:
+        return None
+    if day.exercises:
+        day.is_rest_day = False
+        return day
+    db.delete(day)
+    return None
+
+
 def replace_date_exercises(
     db: Session,
     plan: WorkoutPlan,
@@ -80,25 +154,7 @@ def replace_date_exercises(
         return None
 
     if day is None:
-        lock_parent(db, WorkoutPlan.plan_id, plan.plan_id)
-        day = WorkoutDay(
-            plan_id=plan.plan_id,
-            # The screen formats the date itself, so this is a stable
-            # identifier rather than a label anybody reads.
-            name=on_date.isoformat(),
-            day_order=next_order(
-                db, WorkoutDay.day_order, WorkoutDay.plan_id == plan.plan_id
-            ),
-        )
-        db.add(day)
-        db.flush()
-        db.add(
-            Schedule(
-                user_id=user_id,
-                workout_day_id=day.workout_day_id,
-                scheduled_date=on_date,
-            )
-        )
+        day = create_day_for_date(db, plan, user_id, on_date)
 
     existing = {
         we.exercise_id: we
