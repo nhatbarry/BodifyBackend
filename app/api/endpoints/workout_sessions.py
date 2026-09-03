@@ -1,0 +1,514 @@
+from datetime import date, datetime, timezone
+from decimal import Decimal
+
+from fastapi import APIRouter, HTTPException, Query, Response, status
+from sqlalchemy import func, select
+
+from app.api.dependencies import CurrentUserDep, DbSession
+from app.models.exercises import Exercise
+from app.models.session_exercises import SessionExercise
+from app.models.session_sets import SessionSet
+from app.models.workout_days import WorkoutDay
+from app.models.workout_exercise_sets import WorkoutExerciseSet
+from app.models.workout_exercises import WorkoutExercise
+from app.models.workout_plans import WorkoutPlan
+from app.models.workout_sessions import (
+    ACTIVE_STATUSES,
+    COMPLETED,
+    IN_PROGRESS,
+    PAUSED,
+    WorkoutSession,
+)
+from app.schemas.common import Page
+from app.schemas.workout_sessions import (
+    HistoryTotals,
+    SessionExerciseCreate,
+    SessionExerciseRead,
+    WorkoutHistoryResponse,
+    WorkoutSessionCreate,
+    WorkoutSessionDetail,
+    WorkoutSessionFinish,
+    WorkoutSessionListItem,
+)
+from app.services.exercise_translation import DEFAULT_LANG, best_translation
+from app.services.workout_access import get_owned_day, get_owned_session
+from app.services.session_view import build_detail, build_exercise_reads, build_list_items
+from app.services.workout_ordering import lock_parent, next_order
+
+router = APIRouter(tags=["workout-sessions"])
+
+
+def _exercise_names(db, exercise_ids: list[int], language: str) -> dict[int, str]:
+    """Catalog names, for snapshotting into the session rows."""
+    if not exercise_ids:
+        return {}
+    translation = best_translation(language)
+    return {
+        exercise_id: name
+        for exercise_id, name in db.execute(
+            select(translation.c.exercise_id, translation.c.name).where(
+                translation.c.exercise_id.in_(set(exercise_ids))
+            )
+        ).all()
+        if name
+    }
+
+
+def _reject_if_finished(session: WorkoutSession) -> None:
+    """A finished session is a statement about an afternoon that is over.
+
+    Adding to it would change what happened, so structural writes stop here.
+    Correcting a set that was already recorded stays allowed - see
+    PUT /session-sets/{id} - which is the "controlled corrections" carve-out.
+    """
+    if session.status not in ACTIVE_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Session is {session.status}; it can no longer be added to. "
+                "Existing sets can still be corrected."
+            ),
+        )
+
+
+@router.post(
+    "/workout-sessions",
+    response_model=WorkoutSessionDetail,
+    status_code=status.HTTP_201_CREATED,
+)
+def start_workout_session(
+    payload: WorkoutSessionCreate,
+    current_user: CurrentUserDep,
+    db: DbSession,
+    language: str = Query(DEFAULT_LANG, max_length=10),
+) -> WorkoutSessionDetail:
+    """Start a workout.
+
+    Given a `workout_day_id`, the plan and day names are snapshotted and the
+    day's exercises and target sets are copied in, so recording a planned
+    workout is one call rather than one per set. Set `copy_plan` false to start
+    from the day but log it freehand.
+    """
+    existing = db.scalar(
+        select(WorkoutSession).where(
+            WorkoutSession.user_id == current_user.id,
+            WorkoutSession.status.in_(ACTIVE_STATUSES),
+        )
+    )
+    if existing is not None:
+        # Reported explicitly rather than left to the partial unique index, so
+        # the client can offer to resume instead of showing a database error.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"A workout is already in progress (session {existing.session_id}). "
+                "Finish or abandon it first."
+            ),
+        )
+
+    day: WorkoutDay | None = None
+    plan: WorkoutPlan | None = None
+    if payload.workout_day_id is not None:
+        day = get_owned_day(db, payload.workout_day_id, current_user.id)
+        plan = db.get(WorkoutPlan, day.plan_id)
+
+    session = WorkoutSession(
+        user_id=current_user.id,
+        workout_day_id=day.workout_day_id if day else None,
+        plan_name=plan.name if plan else None,
+        day_name=day.name if day else None,
+        scheduled_date=payload.scheduled_date or date.today(),
+        notes=payload.notes,
+        status=IN_PROGRESS,
+    )
+    if payload.started_at is not None:
+        session.started_at = payload.started_at
+
+    db.add(session)
+    db.flush()
+
+    if day is not None and payload.copy_plan:
+        _copy_plan_into_session(db, session, day, language)
+
+    db.commit()
+    db.refresh(session)
+    return build_detail(db, session)
+
+
+def _copy_plan_into_session(
+    db, session: WorkoutSession, day: WorkoutDay, language: str
+) -> None:
+    """Seed the session from the planned day.
+
+    The plan's numbers land in the `target_*` columns, and the performed
+    columns are left empty - nothing has been lifted yet. Copying rather than
+    referencing is what keeps the history stable when the plan is edited later.
+    """
+    planned = db.scalars(
+        select(WorkoutExercise)
+        .where(WorkoutExercise.workout_day_id == day.workout_day_id)
+        .order_by(WorkoutExercise.exercise_order)
+    ).all()
+    if not planned:
+        return
+
+    names = _exercise_names(db, [we.exercise_id for we in planned], language)
+
+    target_sets = db.scalars(
+        select(WorkoutExerciseSet)
+        .where(
+            WorkoutExerciseSet.workout_exercise_id.in_(
+                [we.workout_exercise_id for we in planned]
+            )
+        )
+        .order_by(WorkoutExerciseSet.workout_exercise_id, WorkoutExerciseSet.set_order)
+    ).all()
+    by_exercise: dict[int, list[WorkoutExerciseSet]] = {}
+    for target in target_sets:
+        by_exercise.setdefault(target.workout_exercise_id, []).append(target)
+
+    for position, planned_exercise in enumerate(planned, start=1):
+        session_exercise = SessionExercise(
+            session_id=session.session_id,
+            exercise_id=planned_exercise.exercise_id,
+            exercise_name=names.get(planned_exercise.exercise_id),
+            exercise_order=position,
+            notes=planned_exercise.notes,
+        )
+        db.add(session_exercise)
+        db.flush()
+
+        for set_position, target in enumerate(
+            by_exercise.get(planned_exercise.workout_exercise_id, []), start=1
+        ):
+            db.add(
+                SessionSet(
+                    session_exercise_id=session_exercise.session_exercise_id,
+                    set_order=set_position,
+                    # Nothing performed yet; the user fills these in as they go.
+                    completed=False,
+                    target_reps=target.target_reps,
+                    target_weight_kg=target.target_weight_kg,
+                    rest_seconds=target.rest_seconds,
+                    workout_exercise_set_id=target.workout_exercise_set_id,
+                )
+            )
+
+
+@router.get("/workout-sessions", response_model=Page[WorkoutSessionListItem])
+def list_workout_sessions(
+    current_user: CurrentUserDep,
+    db: DbSession,
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    status_filter: str | None = Query(None, alias="status"),
+    on_date: date | None = Query(None, alias="date"),
+    from_date: date | None = Query(None, alias="from"),
+    to_date: date | None = Query(None, alias="to"),
+) -> Page[WorkoutSessionListItem]:
+    """The caller's sessions, newest first, with totals but without their sets.
+
+    The date filters are what the calendar uses: `?date=` for the one day a
+    screen is showing, `?from=&to=` to mark a whole month at once.
+    """
+    conditions = [WorkoutSession.user_id == current_user.id]
+    if status_filter:
+        conditions.append(WorkoutSession.status == status_filter)
+    if on_date:
+        conditions.append(WorkoutSession.scheduled_date == on_date)
+    if from_date:
+        conditions.append(WorkoutSession.scheduled_date >= from_date)
+    if to_date:
+        conditions.append(WorkoutSession.scheduled_date <= to_date)
+
+    total = db.scalar(
+        select(func.count()).select_from(WorkoutSession).where(*conditions)
+    )
+    sessions = db.scalars(
+        select(WorkoutSession)
+        .where(*conditions)
+        .order_by(WorkoutSession.started_at.desc(), WorkoutSession.session_id.desc())
+        .limit(limit)
+        .offset((page - 1) * limit)
+    ).all()
+
+    return Page[WorkoutSessionListItem](
+        items=build_list_items(db, sessions), page=page, limit=limit, total=total or 0
+    )
+
+
+@router.get("/workout-sessions/{session_id}", response_model=WorkoutSessionDetail)
+def get_workout_session(
+    session_id: int,
+    current_user: CurrentUserDep,
+    db: DbSession,
+) -> WorkoutSessionDetail:
+    session = get_owned_session(db, session_id, current_user.id)
+    return build_detail(db, session)
+
+
+@router.post(
+    "/workout-sessions/{session_id}/exercises",
+    response_model=SessionExerciseRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def add_session_exercise(
+    session_id: int,
+    payload: SessionExerciseCreate,
+    current_user: CurrentUserDep,
+    db: DbSession,
+    language: str = Query(DEFAULT_LANG, max_length=10),
+) -> SessionExerciseRead:
+    """Record an exercise performed in this session, optionally with its sets."""
+    session = get_owned_session(db, session_id, current_user.id)
+    _reject_if_finished(session)
+
+    if db.get(Exercise, payload.exercise_id) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Exercise not found"
+        )
+
+    if payload.exercise_order is None:
+        lock_parent(db, WorkoutSession.session_id, session_id)
+        exercise_order = next_order(
+            db,
+            SessionExercise.exercise_order,
+            SessionExercise.session_id == session_id,
+        )
+    else:
+        exercise_order = payload.exercise_order
+
+    names = _exercise_names(db, [payload.exercise_id], language)
+    session_exercise = SessionExercise(
+        session_id=session_id,
+        exercise_id=payload.exercise_id,
+        # Snapshotted now: correcting the catalog later must not rewrite this.
+        exercise_name=names.get(payload.exercise_id),
+        exercise_order=exercise_order,
+        notes=payload.notes,
+    )
+    db.add(session_exercise)
+    db.flush()
+
+    for position, performed in enumerate(payload.sets or [], start=1):
+        db.add(
+            SessionSet(
+                session_exercise_id=session_exercise.session_exercise_id,
+                set_order=performed.set_order or position,
+                reps=performed.reps,
+                weight_kg=performed.weight_kg,
+                duration_seconds=performed.duration_seconds,
+                rest_seconds=performed.rest_seconds,
+                completed=performed.completed,
+                target_reps=performed.target_reps,
+                target_weight_kg=performed.target_weight_kg,
+                workout_exercise_set_id=performed.workout_exercise_set_id,
+                notes=performed.notes,
+            )
+        )
+
+    db.commit()
+    db.refresh(session_exercise)
+    return build_exercise_reads(db, [session_exercise])[0]
+
+
+@router.post(
+    "/workout-sessions/{session_id}/finish", response_model=WorkoutSessionDetail
+)
+def finish_workout_session(
+    session_id: int,
+    payload: WorkoutSessionFinish,
+    current_user: CurrentUserDep,
+    db: DbSession,
+) -> WorkoutSessionDetail:
+    """Close the session and stop the clock.
+
+    Duration is not written anywhere - it is the span from `started_at` less
+    whatever was paused, computed on read, so it can never disagree with the
+    times it comes from.
+    """
+    session = get_owned_session(db, session_id, current_user.id)
+
+    if session.status not in ACTIVE_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Session is already {session.status}",
+        )
+
+    completed_at = payload.completed_at or datetime.now(timezone.utc)
+    if completed_at < session.started_at:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="completed_at cannot be before started_at",
+        )
+
+    # Finishing while paused: the clock stopped when the pause began, so bank
+    # that stretch before closing rather than counting the break as training.
+    # The DB also requires paused_at to be null for any non-paused row.
+    if session.paused_at is not None:
+        session.paused_seconds += int(
+            (completed_at - session.paused_at).total_seconds()
+        )
+        session.paused_at = None
+
+    if payload.abandoned:
+        # Kept, not deleted: "I started and gave up" is information, and the
+        # status column exists precisely so it need not be thrown away. The
+        # database requires completed_at to be null for any non-completed row.
+        session.status = "abandoned"
+        session.completed_at = None
+    else:
+        session.status = COMPLETED
+        session.completed_at = completed_at
+
+    if payload.notes is not None:
+        session.notes = payload.notes
+
+    db.commit()
+    db.refresh(session)
+    return build_detail(db, session)
+
+
+@router.get("/workout-history", response_model=WorkoutHistoryResponse)
+def get_workout_history(
+    current_user: CurrentUserDep,
+    db: DbSession,
+    from_date: date | None = Query(None, alias="from"),
+    to_date: date | None = Query(None, alias="to"),
+    limit: int = Query(50, ge=1, le=200),
+) -> WorkoutHistoryResponse:
+    """Completed sessions over a period, with the totals a summary card wants.
+
+    Only completed sessions: an abandoned or in-progress one is not something
+    that happened yet, and averaging it into a month's volume would understate
+    every number on the screen.
+    """
+    if from_date and to_date and to_date < from_date:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="'to' must not be earlier than 'from'",
+        )
+
+    conditions = [
+        WorkoutSession.user_id == current_user.id,
+        WorkoutSession.status == COMPLETED,
+    ]
+    if from_date:
+        conditions.append(WorkoutSession.scheduled_date >= from_date)
+    if to_date:
+        conditions.append(WorkoutSession.scheduled_date <= to_date)
+
+    sessions = db.scalars(
+        select(WorkoutSession)
+        .where(*conditions)
+        .order_by(
+            WorkoutSession.scheduled_date.desc().nulls_last(),
+            WorkoutSession.started_at.desc(),
+        )
+        .limit(limit)
+    ).all()
+
+    items = build_list_items(db, sessions)
+
+    return WorkoutHistoryResponse(
+        from_date=from_date,
+        to_date=to_date,
+        totals=HistoryTotals(
+            session_count=len(items),
+            total_duration_seconds=sum(i.duration_seconds or 0 for i in items),
+            total_sets=sum(i.summary.set_count for i in items),
+            total_reps=sum(i.summary.total_reps for i in items),
+            total_volume_kg=sum(
+                (i.summary.total_volume_kg for i in items), start=Decimal("0")
+            ),
+        ),
+        items=items,
+    )
+
+
+@router.delete(
+    "/workout-sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT
+)
+def delete_workout_session(
+    session_id: int,
+    current_user: CurrentUserDep,
+    db: DbSession,
+) -> Response:
+    """Discard a session entirely, with every exercise and set in it.
+
+    Permanent, and there is no soft delete to fall back on. This is for a
+    session started by mistake; a workout that was genuinely started and given
+    up on is better finished with `abandoned: true`, which keeps the record.
+    """
+    session = get_owned_session(db, session_id, current_user.id)
+    db.delete(session)
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post(
+    "/workout-sessions/{session_id}/pause", response_model=WorkoutSessionDetail
+)
+def pause_workout_session(
+    session_id: int,
+    current_user: CurrentUserDep,
+    db: DbSession,
+) -> WorkoutSessionDetail:
+    """Stop the clock without ending the workout.
+
+    A session is not one continuous block - people take a call, change gyms,
+    eat - and counting that as training makes every recorded duration a lie.
+    The session stays the user's current workout while paused, so no second
+    one can be started, and sets can still be corrected.
+    """
+    session = get_owned_session(db, session_id, current_user.id)
+
+    if session.status == PAUSED:
+        # Idempotent: two taps on a slow connection must not double-count the
+        # break or, worse, reset when it started.
+        return build_detail(db, session)
+
+    if session.status != IN_PROGRESS:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Session is {session.status} and cannot be paused",
+        )
+
+    session.status = PAUSED
+    session.paused_at = datetime.now(timezone.utc)
+
+    db.commit()
+    db.refresh(session)
+    return build_detail(db, session)
+
+
+@router.post(
+    "/workout-sessions/{session_id}/resume", response_model=WorkoutSessionDetail
+)
+def resume_workout_session(
+    session_id: int,
+    current_user: CurrentUserDep,
+    db: DbSession,
+) -> WorkoutSessionDetail:
+    """Start the clock again, banking however long the break lasted."""
+    session = get_owned_session(db, session_id, current_user.id)
+
+    if session.status == IN_PROGRESS:
+        return build_detail(db, session)
+
+    if session.status != PAUSED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Session is {session.status} and cannot be resumed",
+        )
+
+    if session.paused_at is not None:
+        session.paused_seconds += int(
+            (datetime.now(timezone.utc) - session.paused_at).total_seconds()
+        )
+    session.status = IN_PROGRESS
+    session.paused_at = None
+
+    db.commit()
+    db.refresh(session)
+    return build_detail(db, session)

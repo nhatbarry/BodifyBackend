@@ -1,12 +1,11 @@
 from fastapi import APIRouter, HTTPException, Query, status
-from sqlalchemy import case, exists, func, or_, select
+from sqlalchemy import exists, func, or_, select
 
 from app.api.dependencies import DbSession
 from app.models.equipment import Equipment
 from app.models.exercise_equipment import ExerciseEquipment
 from app.models.exercise_media import ExerciseMedia
 from app.models.exercise_muscles import ExerciseMuscle
-from app.models.exercise_translations import ExerciseTranslation
 from app.models.exercises import Exercise
 from app.models.muscle_groups import MuscleGroup
 from app.models.term_translations import TermTranslation
@@ -20,44 +19,10 @@ from app.schemas.exercise_catalog import (
     ExerciseMuscleItem,
     FilterOption,
 )
-from app.services.storage import presigned_url
+from app.services.exercise_media import list_image_urls, url_or_none
+from app.services.exercise_translation import DEFAULT_LANG, best_translation
 
 router = APIRouter(prefix="/exercises", tags=["exercises"])
-
-DEFAULT_LANG = "vi"
-
-
-def _best_translation(language: str):
-    """One translation row per exercise: requested language, else English, else any.
-
-    Exercise names exist only in `exercise_translations`, so without this every
-    listed row would be nameless.
-    """
-    preference = case(
-        (ExerciseTranslation.language == language, 0),
-        (ExerciseTranslation.language == "en", 1),
-        else_=2,
-    )
-    ranked = select(
-        ExerciseTranslation.exercise_id.label("exercise_id"),
-        ExerciseTranslation.language.label("language"),
-        ExerciseTranslation.name.label("name"),
-        ExerciseTranslation.overview.label("overview"),
-        ExerciseTranslation.instructions.label("instructions"),
-        ExerciseTranslation.tips.label("tips"),
-        func.row_number()
-        .over(
-            partition_by=ExerciseTranslation.exercise_id,
-            order_by=(preference.asc(), ExerciseTranslation.language.asc()),
-        )
-        .label("rn"),
-    ).subquery()
-
-    return select(ranked).where(ranked.c.rn == 1).subquery()
-
-
-def _url_or_none(storage_key: str | None) -> str | None:
-    return presigned_url(storage_key) if storage_key else None
 
 
 def _translated_name(base_column, translation_name):
@@ -170,7 +135,7 @@ def list_exercises(
     force_type: str | None = None,
 ) -> Page[ExerciseListItem]:
     """Exercise explorer: search, filter and pagination in one endpoint."""
-    translation = _best_translation(language)
+    translation = best_translation(language)
 
     conditions = []
     if search:
@@ -259,27 +224,17 @@ def list_exercises(
         .offset(offset)
     ).all()
 
-    # Thumbnails in a separate query: joining media here would duplicate rows
-    # for exercises that hold several files.
-    thumbnails: dict[int, str] = {}
-    if rows:
-        ids = [row[0].exercise_id for row in rows]
-        for exercise_id, storage_key in db.execute(
-            select(ExerciseMedia.exercise_id, ExerciseMedia.storage_key)
-            .where(
-                ExerciseMedia.exercise_id.in_(ids),
-                ExerciseMedia.media_type == "thumbnail",
-            )
-            .order_by(ExerciseMedia.exercise_id, ExerciseMedia.sort_order)
-        ).all():
-            thumbnails.setdefault(exercise_id, storage_key)
+    # Pictures in a separate query: joining media here would duplicate rows for
+    # exercises that hold several files.
+    images = list_image_urls(db, [row[0].exercise_id for row in rows])
 
     items = [
         ExerciseListItem(
             exercise_id=exercise.exercise_id,
             name=name,
             language=translation_language,
-            thumbnail_url=_url_or_none(thumbnails.get(exercise.exercise_id)),
+            icon_url=images.get(exercise.exercise_id, (None, None))[0],
+            thumbnail_url=images.get(exercise.exercise_id, (None, None))[1],
             exercise_type=exercise.exercise_type,
             mechanics=exercise.mechanics,
             force_type=exercise.force_type,
@@ -305,7 +260,7 @@ def get_exercise(
             status_code=status.HTTP_404_NOT_FOUND, detail="Exercise not found"
         )
 
-    best = _best_translation(language)
+    best = best_translation(language)
     translation = db.execute(
         select(best).where(best.c.exercise_id == exercise_id)
     ).one_or_none()
@@ -366,7 +321,7 @@ def get_exercise(
             for equipment_id, name in equipment
         ],
         media=ExerciseMediaUrls(
-            thumbnail_url=_url_or_none(first_of.get("thumbnail")),
-            video_url=_url_or_none(first_of.get("video")),
+            thumbnail_url=url_or_none(first_of.get("thumbnail")),
+            video_url=url_or_none(first_of.get("video")),
         ),
     )
