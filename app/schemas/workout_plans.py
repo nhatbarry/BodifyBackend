@@ -247,3 +247,9 @@ class DateExercisesRequest(BaseModel):
     """
 
     exercise_ids: list[int]
+
+
+class DateRestDayRequest(BaseModel):
+    """Tick or untick "this date is a rest day"."""
+
+    is_rest_day: bool

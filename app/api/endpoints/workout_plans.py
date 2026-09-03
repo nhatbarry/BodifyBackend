@@ -10,6 +10,7 @@ from app.models.workout_plans import WorkoutPlan
 from app.schemas.common import Page
 from app.schemas.workout_plans import (
     DateExercisesRequest,
+    DateRestDayRequest,
     DayReorderRequest,
     PlanActiveRequest,
     WorkoutDayCreate,
@@ -21,7 +22,11 @@ from app.schemas.workout_plans import (
 )
 from app.services.exercise_translation import DEFAULT_LANG
 from app.services.workout_access import get_owned_plan
-from app.services.workout_dates import find_day_for_date, replace_date_exercises
+from app.services.workout_dates import (
+    find_day_for_date,
+    replace_date_exercises,
+    set_date_rest_day,
+)
 from app.services.workout_ordering import apply_reorder, lock_parent, next_order
 from app.services.workout_plan_view import (
     build_exercise_reads,
@@ -351,4 +356,52 @@ def set_plan_date_exercises(
         is_rest_day=day.is_rest_day,
         description=day.description,
         exercises=build_exercise_reads(db, exercises, language),
+    )
+
+
+@router.put(
+    "/workout-plans/{plan_id}/dates/{on_date}/rest",
+    response_model=WorkoutDayDetail | None,
+)
+def set_plan_date_rest(
+    plan_id: int,
+    on_date: date,
+    payload: DateRestDayRequest,
+    current_user: CurrentUserDep,
+    db: DbSession,
+) -> WorkoutDayDetail | None:
+    """Mark a calendar date as a planned rest day, or clear the mark.
+
+    Ticking an empty date creates the day and its schedule row, because a rest
+    day is a row rather than an absence - that is what lets the calendar tell
+    "resting today" from "nothing scheduled yet".
+
+    Unticking a rest day removes it again: a day with no exercises and no rest
+    flag means nothing, and would show on the calendar as an empty workout.
+
+    Answers null when the date ends up with nothing on it, matching
+    GET /workout-plans/{id}/dates/{date}.
+    """
+    plan = get_owned_plan(db, plan_id, current_user.id)
+
+    try:
+        day = set_date_rest_day(db, plan, current_user.id, on_date, payload.is_rest_day)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Remove this date's exercises before marking it a rest day",
+        ) from None
+
+    db.commit()
+    if day is None:
+        return None
+    db.refresh(day)
+
+    return WorkoutDayDetail(
+        workout_day_id=day.workout_day_id,
+        name=day.name,
+        day_order=day.day_order,
+        is_rest_day=day.is_rest_day,
+        description=day.description,
+        exercises=[],
     )
