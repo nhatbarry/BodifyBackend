@@ -14,6 +14,7 @@ from decimal import Decimal
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.models.exercises import Exercise
 from app.models.session_exercises import SessionExercise
 from app.models.session_sets import SessionSet
 from app.models.workout_sessions import WorkoutSession
@@ -142,7 +143,15 @@ def build_exercise_reads(
         return []
 
     ids = [se.session_exercise_id for se in session_exercises]
-    images = list_image_urls(db, [se.exercise_id for se in session_exercises])
+    exercise_ids = [se.exercise_id for se in session_exercises]
+    images = list_image_urls(db, exercise_ids)
+    tracking = dict(
+        db.execute(
+            select(Exercise.exercise_id, Exercise.tracking_type).where(
+                Exercise.exercise_id.in_(set(exercise_ids))
+            )
+        ).all()
+    )
 
     sets_by_exercise: dict[int, list[SessionSetRead]] = defaultdict(list)
     for row in db.scalars(
@@ -164,6 +173,7 @@ def build_exercise_reads(
                 images.get(se.exercise_id, (None, None))[0]
                 or images.get(se.exercise_id, (None, None))[1]
             ),
+            tracking_type=tracking.get(se.exercise_id, "reps"),
             sets=sets_by_exercise.get(se.session_exercise_id, []),
         )
         for se in session_exercises

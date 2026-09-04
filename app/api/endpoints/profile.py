@@ -1,10 +1,17 @@
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, File, HTTPException, UploadFile, status
 from sqlalchemy import select
 
 from app.api.dependencies import CurrentUser, CurrentUserDep, DbSession
 from app.models.body_metrics import BodyMetric
 from app.models.user_profiles import UserProfile
 from app.schemas.profile import ProfileRead, ProfileUpdate
+from app.services.avatar import (
+    InvalidImage,
+    MAX_UPLOAD_BYTES,
+    avatar_url,
+    store_avatar,
+)
+from app.services.storage import StorageWriteUnavailable, delete_object
 
 router = APIRouter(prefix="/profile", tags=["profile"])
 
@@ -24,7 +31,10 @@ def _to_read(profile: UserProfile, current_user: CurrentUser, db) -> ProfileRead
         user_id=profile.user_id,
         profile_id=profile.profile_id,
         name=profile.name,
-        avatar_url=profile.avatar_url,
+        # The column holds a storage key, not a URL: a signed URL written into
+        # the database would sit there expiring. It is signed on the way out,
+        # against the user-upload bucket rather than the catalog one.
+        avatar_url=avatar_url(profile.avatar_url),
         date_of_birth=profile.date_of_birth,
         gender=profile.gender,
         role=profile.role,
@@ -65,5 +75,68 @@ def update_profile(
             setattr(profile, field, value)
         db.commit()
         db.refresh(profile)
+
+    return _to_read(profile, current_user, db)
+
+
+@router.post("/avatar", response_model=ProfileRead)
+def upload_avatar(
+    current_user: CurrentUserDep,
+    db: DbSession,
+    file: UploadFile = File(...),
+) -> ProfileRead:
+    """Replace the caller's profile picture.
+
+    The uploaded bytes are decoded, stripped of EXIF, centre-cropped and
+    re-encoded as a 512 px webp before anything is stored - see
+    `app/services/avatar.py` for why each of those matters. The declared
+    content type is never trusted; only a successful decode is.
+    """
+    profile = _require_profile(current_user)
+
+    # Read with a cap rather than trusting Content-Length, which the client
+    # sets. One byte over the limit is enough to know it is too big.
+    raw = file.file.read(MAX_UPLOAD_BYTES + 1)
+
+    try:
+        key = store_avatar(current_user.id, raw, profile.avatar_url)
+    except InvalidImage as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+    except StorageWriteUnavailable as exc:
+        # A configuration gap, not the caller's fault - say so plainly instead
+        # of letting it surface as an opaque AccessDenied from R2.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Avatar uploads are not configured on this server",
+        ) from exc
+
+    profile.avatar_url = key
+    db.commit()
+    db.refresh(profile)
+    return _to_read(profile, current_user, db)
+
+
+@router.delete("/avatar", response_model=ProfileRead)
+def remove_avatar(current_user: CurrentUserDep, db: DbSession) -> ProfileRead:
+    """Drop the profile picture and the object behind it.
+
+    The row is cleared even if the object cannot be removed: leaving a user
+    stuck with a picture they asked to delete is worse than leaving one file
+    in a bucket.
+    """
+    profile = _require_profile(current_user)
+    key = profile.avatar_url
+
+    profile.avatar_url = None
+    db.commit()
+    db.refresh(profile)
+
+    if key:
+        try:
+            delete_object(key)
+        except Exception:  # noqa: BLE001
+            pass
 
     return _to_read(profile, current_user, db)

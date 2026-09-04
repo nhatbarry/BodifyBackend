@@ -36,6 +36,9 @@ class ExerciseListItem(BaseModel):
     thumbnail_url: str | None = None
 
     exercise_type: str | None = None
+    # reps | duration | distance | reps_duration. `exercise_type` cannot answer
+    # this - Bench Press and Plank are both 'Strength'.
+    tracking_type: str = "reps"
     mechanics: str | None = None
     force_type: str | None = None
     experience_level: str | None = None

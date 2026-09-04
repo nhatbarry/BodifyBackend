@@ -87,6 +87,8 @@ def add_target_set(
         set_order=set_order,
         target_reps=payload.target_reps,
         target_weight_kg=payload.target_weight_kg,
+        target_duration_seconds=payload.target_duration_seconds,
+        target_distance_m=payload.target_distance_m,
         rest_seconds=payload.rest_seconds,
         notes=payload.notes,
     )

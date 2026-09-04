@@ -262,3 +262,95 @@ def test_volume_is_summed_per_set_not_multiplied_afterwards(
     ).json()
     # 400 + 500, not (15) x (140) = 2100
     assert float(body["summary"]["total_volume_kg"]) == 900.0
+
+
+# ============================================================
+# Reopening
+# ============================================================
+
+
+def test_a_finished_session_can_be_reopened_and_added_to(
+    client: TestClient, owner, plan_with_day
+):
+    """"Finish" is the user saying they were done, not a lock.
+
+    One more set after racking the bar is ordinary; forcing it into a second
+    session would show the afternoon as two workouts in the history.
+    """
+    session = _start(client, owner, plan_with_day["day"]["workout_day_id"])
+    session_id = session["session_id"]
+    exercise_id = session["exercises"][0]["session_exercise_id"]
+
+    client.post(f"{API}/workout-sessions/{session_id}/finish", headers=owner, json={})
+    assert (
+        client.post(
+            f"{API}/session-exercises/{exercise_id}/sets", headers=owner,
+            json={"reps": 5},
+        ).status_code
+        == 409
+    )
+
+    reopened = client.post(
+        f"{API}/workout-sessions/{session_id}/reopen", headers=owner
+    )
+    assert reopened.status_code == 200, reopened.text
+    assert reopened.json()["status"] == "in_progress"
+    assert reopened.json()["completed_at"] is None
+
+    added = client.post(
+        f"{API}/session-exercises/{exercise_id}/sets", headers=owner,
+        json={"reps": 5},
+    )
+    assert added.status_code == 201, added.text
+
+
+def test_reopening_does_not_count_the_gap_as_training(client: TestClient, owner):
+    """The stretch between finishing and picking it back up is not a workout.
+
+    Without banking it, a session finished at noon and reopened at five would
+    report a five-hour training session.
+    """
+    session = _start(client, owner)
+    sid = session["session_id"]
+
+    client.post(f"{API}/workout-sessions/{sid}/finish", headers=owner, json={})
+    banked_before = client.get(
+        f"{API}/workout-sessions/{sid}", headers=owner
+    ).json()["paused_seconds"]
+
+    time.sleep(1.2)
+    reopened = client.post(f"{API}/workout-sessions/{sid}/reopen", headers=owner)
+
+    assert reopened.json()["paused_seconds"] > banked_before, (
+        "the time between finishing and reopening must be excluded"
+    )
+
+
+def test_reopening_is_refused_while_another_workout_is_open(
+    client: TestClient, owner
+):
+    """One workout at a time is a partial unique index, not a preference."""
+    first = _start(client, owner)
+    client.post(
+        f"{API}/workout-sessions/{first['session_id']}/finish", headers=owner, json={}
+    )
+    second = _start(client, owner)
+
+    clash = client.post(
+        f"{API}/workout-sessions/{first['session_id']}/reopen", headers=owner
+    )
+    assert clash.status_code == 409
+    assert str(second["session_id"]) in clash.json()["detail"], (
+        "the refusal has to name the session standing in the way"
+    )
+
+
+def test_reopening_an_active_session_is_idempotent(client: TestClient, owner):
+    """A double tap on a slow connection must not bank the gap twice."""
+    session = _start(client, owner)
+    sid = session["session_id"]
+
+    first = client.post(f"{API}/workout-sessions/{sid}/reopen", headers=owner)
+    assert first.status_code == 200
+    assert first.json()["status"] == "in_progress"
+    assert first.json()["paused_seconds"] == 0

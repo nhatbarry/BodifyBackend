@@ -23,6 +23,10 @@ class WorkoutSetCreate(BaseModel):
     target_weight_kg: Decimal | None = Field(
         default=None, ge=0, max_digits=7, decimal_places=2
     )
+    target_duration_seconds: int | None = Field(default=None, gt=0)
+    target_distance_m: Decimal | None = Field(
+        default=None, gt=0, max_digits=8, decimal_places=2
+    )
     rest_seconds: int | None = Field(default=None, ge=0)
     notes: str | None = None
 
@@ -38,6 +42,10 @@ class WorkoutSetUpdate(BaseModel):
     target_weight_kg: Decimal | None = Field(
         default=None, ge=0, max_digits=7, decimal_places=2
     )
+    target_duration_seconds: int | None = Field(default=None, gt=0)
+    target_distance_m: Decimal | None = Field(
+        default=None, gt=0, max_digits=8, decimal_places=2
+    )
     rest_seconds: int | None = Field(default=None, ge=0)
     notes: str | None = None
 
@@ -49,6 +57,8 @@ class WorkoutSetRead(BaseModel):
     set_order: int
     target_reps: int | None
     target_weight_kg: Decimal | None
+    target_duration_seconds: int | None = None
+    target_distance_m: Decimal | None = None
     rest_seconds: int | None
     notes: str | None
 
@@ -89,6 +99,10 @@ class WorkoutExerciseRead(BaseModel):
     # Small variant for list rows; null until the icon is uploaded, so clients
     # fall back to thumbnail_url.
     icon_url: str | None
+    # How this exercise is measured, so the target editor knows whether to ask
+    # for reps, seconds or metres. Read live from the catalog: it describes the
+    # movement, not the plan.
+    tracking_type: str = "reps"
     # Null for the 16 exercises with no thumbnail on file.
     thumbnail_url: str | None
 

@@ -64,6 +64,10 @@ class WorkoutExerciseSet(Base):
 
     target_reps: Mapped[int | None] = mapped_column()
     target_weight_kg: Mapped[Decimal | None] = mapped_column(Numeric(7, 2))
+    # A planned Plank had nothing to aim at before these existed; performance
+    # is a ratio and needs a target on the same axis as the actual.
+    target_duration_seconds: Mapped[int | None] = mapped_column()
+    target_distance_m: Mapped[Decimal | None] = mapped_column(Numeric(8, 2))
     rest_seconds: Mapped[int | None] = mapped_column()
     notes: Mapped[str | None] = mapped_column(Text)
 

@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.models.workout_days import WorkoutDay
 from app.models.workout_exercise_sets import WorkoutExerciseSet
+from app.models.exercises import Exercise
 from app.models.workout_exercises import WorkoutExercise
 from app.models.workout_plans import WorkoutPlan
 from app.schemas.workout_plans import (
@@ -50,6 +51,13 @@ def build_exercise_reads(
     }
 
     images = list_image_urls(db, exercise_ids)
+    tracking = dict(
+        db.execute(
+            select(Exercise.exercise_id, Exercise.tracking_type).where(
+                Exercise.exercise_id.in_(set(exercise_ids))
+            )
+        ).all()
+    )
 
     sets_by_exercise: dict[int, list[WorkoutSetRead]] = defaultdict(list)
     for row in db.scalars(
@@ -74,6 +82,7 @@ def build_exercise_reads(
                 notes=we.notes,
                 name=name,
                 language=translation_language,
+                tracking_type=tracking.get(we.exercise_id, "reps"),
                 icon_url=images.get(we.exercise_id, (None, None))[0],
                 thumbnail_url=images.get(we.exercise_id, (None, None))[1],
                 sets=sets_by_exercise.get(we.workout_exercise_id, []),

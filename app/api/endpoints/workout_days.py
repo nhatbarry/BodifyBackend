@@ -141,6 +141,8 @@ def add_exercise_to_day(
                 set_order=target_set.set_order or position,
                 target_reps=target_set.target_reps,
                 target_weight_kg=target_set.target_weight_kg,
+                target_duration_seconds=target_set.target_duration_seconds,
+                target_distance_m=target_set.target_distance_m,
                 rest_seconds=target_set.rest_seconds,
                 notes=target_set.notes,
             )
