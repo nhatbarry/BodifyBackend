@@ -24,6 +24,10 @@ class SessionSetCreate(BaseModel):
         default=None, ge=0, max_digits=7, decimal_places=2
     )
     duration_seconds: int | None = Field(default=None, ge=0)
+    # Metres, for the loaded carries. Weight stays meaningful alongside it.
+    distance_m: Decimal | None = Field(
+        default=None, ge=0, max_digits=8, decimal_places=2
+    )
     rest_seconds: int | None = Field(default=None, ge=0)
     completed: bool = True
 
@@ -32,6 +36,10 @@ class SessionSetCreate(BaseModel):
     target_reps: int | None = Field(default=None, gt=0)
     target_weight_kg: Decimal | None = Field(
         default=None, ge=0, max_digits=7, decimal_places=2
+    )
+    target_duration_seconds: int | None = Field(default=None, gt=0)
+    target_distance_m: Decimal | None = Field(
+        default=None, gt=0, max_digits=8, decimal_places=2
     )
     workout_exercise_set_id: int | None = None
 
@@ -51,6 +59,9 @@ class SessionSetUpdate(BaseModel):
         default=None, ge=0, max_digits=7, decimal_places=2
     )
     duration_seconds: int | None = Field(default=None, ge=0)
+    distance_m: Decimal | None = Field(
+        default=None, ge=0, max_digits=8, decimal_places=2
+    )
     rest_seconds: int | None = Field(default=None, ge=0)
     completed: bool | None = None
     notes: str | None = None
@@ -65,11 +76,14 @@ class SessionSetRead(BaseModel):
     reps: int | None
     weight_kg: Decimal | None
     duration_seconds: int | None
+    distance_m: Decimal | None = None
     rest_seconds: int | None
     completed: bool
 
     target_reps: int | None
     target_weight_kg: Decimal | None
+    target_duration_seconds: int | None = None
+    target_distance_m: Decimal | None = None
     workout_exercise_set_id: int | None
 
     notes: str | None
@@ -103,6 +117,13 @@ class SessionExerciseRead(BaseModel):
 
     # Resolved live for display; the snapshot above is what the history means.
     thumbnail_url: str | None = None
+
+    # How this exercise is measured, so the client knows which inputs to show:
+    # reps and weight for a Bench Press, seconds for a Plank, metres for a
+    # carry. Read live from the catalog rather than snapshotted - it describes
+    # the movement, not the performance, and correcting it should correct
+    # every screen at once.
+    tracking_type: str = "reps"
 
     sets: list[SessionSetRead]
 

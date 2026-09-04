@@ -10,3 +10,5 @@ boto3
 supabase
 pytest
 httpx
+python-multipart
+pillow

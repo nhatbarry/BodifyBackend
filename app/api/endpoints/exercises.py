@@ -309,6 +309,7 @@ def get_exercise(
         instructions=(translation.instructions if translation else None) or exercise.instructions,
         tips=(translation.tips if translation else None) or exercise.tips,
         exercise_type=exercise.exercise_type,
+        tracking_type=exercise.tracking_type,
         mechanics=exercise.mechanics,
         force_type=exercise.force_type,
         experience_level=exercise.experience_level,

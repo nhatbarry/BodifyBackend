@@ -67,10 +67,13 @@ def log_set(
         reps=payload.reps,
         weight_kg=payload.weight_kg,
         duration_seconds=payload.duration_seconds,
+        distance_m=payload.distance_m,
         rest_seconds=payload.rest_seconds,
         completed=payload.completed,
         target_reps=payload.target_reps,
         target_weight_kg=payload.target_weight_kg,
+        target_duration_seconds=payload.target_duration_seconds,
+        target_distance_m=payload.target_distance_m,
         workout_exercise_set_id=payload.workout_exercise_set_id,
         notes=payload.notes,
     )

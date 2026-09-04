@@ -8,3 +8,9 @@ STORAGE_ENDPOINT=
 STORAGE_ACCESS_KEY=
 STORAGE_SECRET_KEY=
 STORAGE_BUCKET=
+
+# R2 credential allowed to write and delete. Only avatar upload uses it;
+# the pair above stays read-only so the catalog path cannot damage anything.
+STORAGE_WRITE_ACCESS_KEY=
+STORAGE_WRITE_SECRET_KEY=
+STORAGE_WRITE_BUCKET=

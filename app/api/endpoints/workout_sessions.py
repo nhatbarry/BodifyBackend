@@ -19,6 +19,8 @@ from app.models.workout_sessions import (
     PAUSED,
     WorkoutSession,
 )
+from app.services.achievements import evaluate as evaluate_achievements
+from app.services.personal_records import record_personal_bests
 from app.schemas.common import Page
 from app.schemas.workout_sessions import (
     HistoryTotals,
@@ -55,17 +57,20 @@ def _exercise_names(db, exercise_ids: list[int], language: str) -> dict[int, str
 
 
 def _reject_if_finished(session: WorkoutSession) -> None:
-    """A finished session is a statement about an afternoon that is over.
+    """Structural writes need an active session.
 
-    Adding to it would change what happened, so structural writes stop here.
-    Correcting a set that was already recorded stays allowed - see
-    PUT /session-sets/{id} - which is the "controlled corrections" carve-out.
+    Not a dead end: POST /workout-sessions/{id}/reopen puts a finished session
+    back in progress, so "I did one more set after hitting finish" is a
+    reopen, not a second workout. The refusal here keeps the two steps
+    explicit rather than silently un-finishing a session behind a set write.
+    Correcting a set that was already recorded never needed either - see
+    PUT /session-sets/{id}.
     """
     if session.status not in ACTIVE_STATUSES:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
-                f"Session is {session.status}; it can no longer be added to. "
+                f"Session is {session.status}; reopen it to add to it. "
                 "Existing sets can still be corrected."
             ),
         )
@@ -189,6 +194,11 @@ def _copy_plan_into_session(
                     completed=False,
                     target_reps=target.target_reps,
                     target_weight_kg=target.target_weight_kg,
+                    # Copied like the other two. Without these a planned Plank
+                    # arrives with nothing to aim at, and performance for a
+                    # timed exercise has no denominator.
+                    target_duration_seconds=target.target_duration_seconds,
+                    target_distance_m=target.target_distance_m,
                     rest_seconds=target.rest_seconds,
                     workout_exercise_set_id=target.workout_exercise_set_id,
                 )
@@ -364,6 +374,21 @@ def finish_workout_session(
     if payload.notes is not None:
         session.notes = payload.notes
 
+    # Phase 4. Only a completed session is evidence of anything - abandoning is
+    # the user saying it did not happen, and a record set during an abandoned
+    # attempt would be a record they never claimed.
+    #
+    # Both calls are safe to repeat, which matters because reopening lets the
+    # same session be finished more than once: a record has to beat the
+    # standing best, and an unlock collides with uq_user_achievements. They
+    # share this transaction so a badge cannot survive a rolled-back finish.
+    if session.status == COMPLETED:
+        # Records first: "your first personal record" is an achievement, and
+        # it must be able to see the record this very session just set.
+        record_personal_bests(db, current_user.id, session.session_id)
+        db.flush()
+        evaluate_achievements(db, current_user.id)
+
     db.commit()
     db.refresh(session)
     return build_detail(db, session)
@@ -507,6 +532,72 @@ def resume_workout_session(
             (datetime.now(timezone.utc) - session.paused_at).total_seconds()
         )
     session.status = IN_PROGRESS
+    session.paused_at = None
+
+    db.commit()
+    db.refresh(session)
+    return build_detail(db, session)
+
+
+@router.post(
+    "/workout-sessions/{session_id}/reopen", response_model=WorkoutSessionDetail
+)
+def reopen_workout_session(
+    session_id: int,
+    current_user: CurrentUserDep,
+    db: DbSession,
+) -> WorkoutSessionDetail:
+    """Pick a finished session back up and keep training.
+
+    "Finish" is the user saying they are done, not the database deciding they
+    are: people rack the bar, hit the button and then do one more set. Making
+    that impossible pushes the set into a second session that reads, in the
+    history, as a second workout on the same afternoon.
+
+    The stretch between finishing and reopening is banked into
+    `paused_seconds`, exactly like a pause: whatever the user was doing
+    between the two taps, it was not this workout, and counting it would make
+    every reopened session's duration a lie. An abandoned session has no
+    `completed_at`, so the moment it stopped being active is taken from
+    `updated_at`, which the row's trigger stamped then.
+
+    Idempotent for a session that is already active, so a double tap on a slow
+    connection cannot bank the gap twice.
+    """
+    session = get_owned_session(db, session_id, current_user.id)
+
+    if session.status in ACTIVE_STATUSES:
+        return build_detail(db, session)
+
+    # One workout at a time is a partial unique index, not a preference: two
+    # active rows cannot both exist, so say which one is in the way rather
+    # than letting the insert fail with a constraint name.
+    clash = (
+        db.query(WorkoutSession)
+        .filter(
+            WorkoutSession.user_id == current_user.id,
+            WorkoutSession.status.in_(ACTIVE_STATUSES),
+        )
+        .first()
+    )
+    if clash is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Another workout is already in progress (session {clash.session_id}); "
+                "finish it before reopening this one."
+            ),
+        )
+
+    ended_at = session.completed_at or session.updated_at
+    gap = int((datetime.now(timezone.utc) - ended_at).total_seconds())
+    if gap > 0:
+        session.paused_seconds += gap
+
+    session.status = IN_PROGRESS
+    # The CHECK ties `completed_at is not null` to the completed status, so it
+    # has to go the moment the status does.
+    session.completed_at = None
     session.paused_at = None
 
     db.commit()

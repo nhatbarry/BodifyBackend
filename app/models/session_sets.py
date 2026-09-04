@@ -85,6 +85,8 @@ class SessionSet(Base):
     reps: Mapped[int | None] = mapped_column()
     weight_kg: Mapped[Decimal | None] = mapped_column(Numeric(7, 2))
     duration_seconds: Mapped[int | None] = mapped_column()
+    # Metres. A loaded carry is measured over ground, not in reps or seconds.
+    distance_m: Mapped[Decimal | None] = mapped_column(Numeric(8, 2))
     rest_seconds: Mapped[int | None] = mapped_column()
     completed: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="true"
@@ -93,6 +95,8 @@ class SessionSet(Base):
     # Planned, snapshotted.
     target_reps: Mapped[int | None] = mapped_column()
     target_weight_kg: Mapped[Decimal | None] = mapped_column(Numeric(7, 2))
+    target_duration_seconds: Mapped[int | None] = mapped_column()
+    target_distance_m: Mapped[Decimal | None] = mapped_column(Numeric(8, 2))
     workout_exercise_set_id: Mapped[int | None] = mapped_column(
         BigInteger,
         ForeignKey(

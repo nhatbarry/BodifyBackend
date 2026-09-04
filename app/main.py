@@ -14,6 +14,7 @@ from app.api.endpoints import (
     workout_exercise_sets,
     workout_exercises,
     workout_plans,
+    progress,
     workout_sessions,
 )
 
@@ -45,6 +46,9 @@ app.include_router(schedules.router, prefix=API_V1_PREFIX)
 # /session-sets/{id}, so neither carries a router prefix.
 app.include_router(workout_sessions.router, prefix=API_V1_PREFIX)
 app.include_router(session_sets.router, prefix=API_V1_PREFIX)
+
+# Phase 4: what the record adds up to.
+app.include_router(progress.router, prefix=API_V1_PREFIX)
 
 
 @app.get("/")

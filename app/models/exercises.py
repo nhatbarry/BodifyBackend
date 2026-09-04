@@ -23,6 +23,14 @@ class Exercise(Base):
     exercise_type: Mapped[str | None] = mapped_column(String(50))
     mechanics: Mapped[str | None] = mapped_column(String(50))
     force_type: Mapped[str | None] = mapped_column(String(50))
+
+    # What the effort is counted in. `exercise_type` cannot answer this: Bench
+    # Press and Plank are both 'Strength', but one is reps and the other is
+    # seconds, and the app has to pick an input before the user types anything.
+    # Weight is orthogonal - a Farmer's Carry is metres *and* 40 kg.
+    tracking_type: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default="reps"
+    )
     experience_level: Mapped[str | None] = mapped_column(String(30))
 
     overview: Mapped[str | None] = mapped_column(Text)

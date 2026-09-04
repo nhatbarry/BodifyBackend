@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import TYPE_CHECKING
 
 from sqlalchemy import (
+    Date,
     BigInteger,
     Boolean,
     CheckConstraint,
@@ -53,6 +54,9 @@ class WorkoutPlan(Base):
 
     goal: Mapped[str | None] = mapped_column(String(50))
     duration_weeks: Mapped[int | None] = mapped_column()
+    # With duration_weeks this gives the window plan-completion is measured
+    # over. Nullable: an open-ended plan has no end to have completed.
+    start_date: Mapped[date | None] = mapped_column(Date)
 
     # DELETE removes the plan outright; archiving is PUT status='archived'.
     status: Mapped[str] = mapped_column(String(20), nullable=False, server_default="active")
