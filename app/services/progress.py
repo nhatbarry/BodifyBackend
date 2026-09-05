@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 from sqlalchemy import func, select
@@ -319,3 +319,177 @@ def exercise_progression(
         )
         for day, weight, reps, duration, distance, volume in db.execute(query).all()
     ]
+
+
+@dataclass
+class ActivityDay:
+    """One day of the activity strip."""
+
+    day: date
+    completed_sets: int
+    volume_kg: float
+    session_count: int
+
+
+def recent_activity(
+    db: Session, user_id: uuid.UUID, days: int = 7
+) -> list[ActivityDay]:
+    """Completed sets per day over the last `days`, oldest first.
+
+    Sets rather than volume, because volume only exists for loaded work: a day
+    of planks and carries would read as zero effort, which is the opposite of
+    what happened. Sets are the one unit every tracking type produces.
+
+    Every day in the window is returned, trained or not - a rest day is part of
+    the shape of a week, and a strip with gaps in it cannot be read.
+    """
+    end = date.today()
+    start = end - timedelta(days=days - 1)
+
+    rows = dict(
+        (row[0], row)
+        for row in db.execute(
+            select(
+                func.date(WorkoutSession.completed_at).label("day"),
+                func.count(SessionSet.session_set_id),
+                func.coalesce(
+                    func.sum(SessionSet.reps * SessionSet.weight_kg), 0
+                ),
+                func.count(func.distinct(WorkoutSession.session_id)),
+            )
+            .select_from(SessionSet)
+            .join(
+                SessionExercise,
+                SessionExercise.session_exercise_id
+                == SessionSet.session_exercise_id,
+            )
+            .join(
+                WorkoutSession,
+                WorkoutSession.session_id == SessionExercise.session_id,
+            )
+            .where(
+                WorkoutSession.user_id == user_id,
+                WorkoutSession.status == COMPLETED,
+                SessionSet.completed.is_(True),
+                func.date(WorkoutSession.completed_at) >= start,
+                func.date(WorkoutSession.completed_at) <= end,
+            )
+            .group_by(func.date(WorkoutSession.completed_at))
+        ).all()
+    )
+
+    result: list[ActivityDay] = []
+    for offset in range(days):
+        day = start + timedelta(days=offset)
+        row = rows.get(day)
+        result.append(
+            ActivityDay(
+                day=day,
+                completed_sets=int(row[1]) if row else 0,
+                volume_kg=float(row[2] or 0) if row else 0.0,
+                session_count=int(row[3]) if row else 0,
+            )
+        )
+    return result
+
+
+@dataclass
+class RecentExercise:
+    """One exercise the user trained, with what they did that day."""
+
+    exercise_id: int
+    name: str | None
+    tracking_type: str
+    day: date
+    session_id: int
+    set_count: int
+    total_reps: int
+    total_volume_kg: float
+    best_duration_seconds: int | None
+    best_distance_m: float | None
+
+
+def recent_exercises(
+    db: Session, user_id: uuid.UUID, limit: int = 4
+) -> list[RecentExercise]:
+    """The exercises trained most recently, newest first, one row each.
+
+    Grouped by (exercise, day) rather than by session: two sessions on one
+    afternoon are one training day as far as "what did I do recently" is
+    concerned, and an exercise repeated across the week should appear once,
+    at its latest date, not four times.
+
+    Aggregated here for the same reason the history totals are: the client
+    would otherwise pull every set of every session to add them up.
+    """
+    day = func.date(WorkoutSession.completed_at).label("day")
+
+    rows = db.execute(
+        select(
+            SessionExercise.exercise_id,
+            Exercise.tracking_type,
+            day,
+            func.max(WorkoutSession.session_id),
+            func.count(SessionSet.session_set_id),
+            func.coalesce(func.sum(SessionSet.reps), 0),
+            func.coalesce(
+                func.sum(SessionSet.reps * SessionSet.weight_kg), 0
+            ),
+            func.max(SessionSet.duration_seconds),
+            func.max(SessionSet.distance_m),
+        )
+        .select_from(SessionSet)
+        .join(
+            SessionExercise,
+            SessionExercise.session_exercise_id == SessionSet.session_exercise_id,
+        )
+        .join(
+            WorkoutSession,
+            WorkoutSession.session_id == SessionExercise.session_id,
+        )
+        .join(Exercise, Exercise.exercise_id == SessionExercise.exercise_id)
+        .where(
+            WorkoutSession.user_id == user_id,
+            WorkoutSession.status == COMPLETED,
+            SessionSet.completed.is_(True),
+        )
+        .group_by(SessionExercise.exercise_id, Exercise.tracking_type, day)
+        .order_by(day.desc())
+    ).all()
+
+    # De-duplicated in Python rather than with a window function: the list is
+    # short, and "the latest day for each exercise" reads plainly here.
+    seen: set[int] = set()
+    result: list[RecentExercise] = []
+    for (
+        exercise_id,
+        tracking_type,
+        performed_on,
+        session_id,
+        set_count,
+        total_reps,
+        volume,
+        best_duration,
+        best_distance,
+    ) in rows:
+        if exercise_id in seen:
+            continue
+        seen.add(exercise_id)
+        result.append(
+            RecentExercise(
+                exercise_id=exercise_id,
+                name=None,  # filled in by the endpoint, which knows the language
+                tracking_type=tracking_type,
+                day=performed_on,
+                session_id=session_id,
+                set_count=int(set_count or 0),
+                total_reps=int(total_reps or 0),
+                total_volume_kg=float(volume or 0),
+                best_duration_seconds=best_duration,
+                best_distance_m=float(best_distance) if best_distance else None,
+            )
+        )
+        if len(result) >= limit:
+            break
+
+    return result

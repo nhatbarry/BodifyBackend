@@ -395,3 +395,66 @@ def test_rest_day_on_someone_elses_plan_is_404(client: TestClient, stranger, pla
         json={"is_rest_day": True},
     )
     assert response.status_code == 404
+
+
+def test_a_fourth_rest_day_in_a_row_is_refused(client: TestClient, owner):
+    """Three days off is a rest week; a fourth is drifting out of the habit,
+    and a plan that lets it through is not a plan any more."""
+    plan = client.post(
+        f"{API}/workout-plans", headers=owner, json={"name": "Rest rule"}
+    ).json()
+    plan_id = plan["plan_id"]
+
+    def rest(day: str, value: bool = True):
+        return client.put(
+            f"{API}/workout-plans/{plan_id}/dates/2026-10-{day}/rest",
+            headers=owner,
+            json={"is_rest_day": value},
+        )
+
+    for day in ("05", "06", "07"):
+        assert rest(day).status_code == 200, f"day {day} should be allowed"
+
+    refused = rest("08")
+    assert refused.status_code == 409
+    assert "row" in refused.json()["detail"]
+
+
+def test_a_rest_day_inserted_into_a_gap_counts_too(client: TestClient, owner):
+    """The run is measured outwards in both directions: three off with a
+    fourth slipped between two of them is still four in a row."""
+    plan = client.post(
+        f"{API}/workout-plans", headers=owner, json={"name": "Rest gap"}
+    ).json()
+    plan_id = plan["plan_id"]
+
+    def rest(day: str):
+        return client.put(
+            f"{API}/workout-plans/{plan_id}/dates/2026-11-{day}/rest",
+            headers=owner,
+            json={"is_rest_day": True},
+        )
+
+    # 10, 11 then 13, 14 - two runs of two, with the 12th still free.
+    for day in ("10", "11", "13", "14"):
+        assert rest(day).status_code == 200
+
+    # Filling the gap joins them into five.
+    assert rest("12").status_code == 409
+
+
+def test_reticking_an_existing_rest_day_is_not_refused(client: TestClient, owner):
+    """Re-sending what is already true must not fail - a double tap on a slow
+    connection is not a rule violation."""
+    plan = client.post(
+        f"{API}/workout-plans", headers=owner, json={"name": "Rest idem"}
+    ).json()
+    plan_id = plan["plan_id"]
+
+    for _ in range(3):
+        response = client.put(
+            f"{API}/workout-plans/{plan_id}/dates/2026-12-01/rest",
+            headers=owner,
+            json={"is_rest_day": True},
+        )
+        assert response.status_code == 200

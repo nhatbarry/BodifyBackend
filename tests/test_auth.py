@@ -88,3 +88,87 @@ def test_protected_routes_refuse_an_anonymous_caller(client: TestClient):
     ]:
         response = getattr(client, method)(f"{API}{path}")
         assert response.status_code == 401, f"{path} answered {response.status_code}"
+
+
+# ============================================================
+# Changing credentials
+# ============================================================
+
+
+def test_changing_a_password_requires_the_current_one(client: TestClient, owner):
+    """An access token alone must not be enough. A phone left unlocked already
+    carries one, and this is exactly the move that locks the owner out."""
+    response = client.put(
+        f"{API}/auth/password",
+        headers=owner,
+        json={"current_password": "definitely-not-it", "new_password": "NewPass123"},
+    )
+    assert response.status_code == 401
+    assert "current password" in response.json()["detail"].lower()
+
+
+def test_a_password_can_be_changed_and_then_used(
+    client: TestClient, credentials
+):
+    """The whole point: the new password works afterwards, the old one does not."""
+    created = credentials()
+    email = created["email"]
+    old_password = created["password"]
+    new_password = "ChangedPass456"
+
+    changed = client.put(
+        f"{API}/auth/password",
+        headers=created["headers"],
+        json={"current_password": old_password, "new_password": new_password},
+    )
+    assert changed.status_code == 204, changed.text
+
+    assert (
+        client.post(
+            f"{API}/auth/login",
+            json={"email": email, "password": old_password},
+        ).status_code
+        == 401
+    )
+    assert (
+        client.post(
+            f"{API}/auth/login",
+            json={"email": email, "password": new_password},
+        ).status_code
+        == 200
+    )
+
+
+def test_reusing_the_same_password_is_refused(client: TestClient, credentials):
+    created = credentials()
+    response = client.put(
+        f"{API}/auth/password",
+        headers=created["headers"],
+        json={
+            "current_password": created["password"],
+            "new_password": created["password"],
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_changing_an_email_requires_the_current_password(client: TestClient, owner):
+    response = client.put(
+        f"{API}/auth/email",
+        headers=owner,
+        json={"current_password": "wrong", "new_email": "pytest-moved@example.com"},
+    )
+    assert response.status_code == 401
+
+
+def test_changing_to_the_same_email_is_refused(client: TestClient, credentials):
+    created = credentials()
+    response = client.put(
+        f"{API}/auth/email",
+        headers=created["headers"],
+        json={
+            "current_password": created["password"],
+            "new_email": created["email"],
+        },
+    )
+    assert response.status_code == 422

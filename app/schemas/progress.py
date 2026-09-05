@@ -43,6 +43,43 @@ class ProgressPointRead(BaseModel):
     volume_kg: float
 
 
+class ActivityDayRead(BaseModel):
+    """One day of the home screen's activity strip.
+
+    Counted in sets rather than volume: volume only exists for loaded work, so
+    a day of planks and carries would read as zero effort - the opposite of
+    what happened.
+    """
+
+    day: date
+    completed_sets: int
+    volume_kg: float
+    session_count: int
+
+
+class RecentExerciseRead(BaseModel):
+    """One exercise the user trained recently, with that day's numbers.
+
+    Grouped by (exercise, day): two sessions on one afternoon are one training
+    day as far as "what have I been doing" is concerned, and an exercise
+    trained four times this week belongs on the list once, at its latest date.
+    """
+
+    exercise_id: int
+    name: str | None
+    tracking_type: str
+    thumbnail_url: str | None = None
+
+    day: date
+    session_id: int
+
+    set_count: int
+    total_reps: int
+    total_volume_kg: float
+    best_duration_seconds: int | None = None
+    best_distance_m: float | None = None
+
+
 class ExerciseProgressionRead(BaseModel):
     exercise_id: int
     name: str | None

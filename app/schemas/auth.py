@@ -58,3 +58,21 @@ class MeResponse(BaseModel):
     user: AuthUser
     profile: UserProfileRead | None = None
     role: UserRole
+
+
+class ChangePasswordRequest(BaseModel):
+    """Changing a password proves you know the old one first.
+
+    A stolen phone with an unlocked app is the case this defends against: an
+    access token alone must not be enough to lock the real owner out.
+    """
+
+    current_password: str = Field(min_length=1)
+    new_password: str = Field(min_length=6, max_length=72)
+
+
+class ChangeEmailRequest(BaseModel):
+    """Same rule as the password: the current one is re-checked first."""
+
+    current_password: str = Field(min_length=1)
+    new_email: EmailStr

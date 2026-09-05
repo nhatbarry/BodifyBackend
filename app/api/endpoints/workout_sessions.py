@@ -603,3 +603,119 @@ def reopen_workout_session(
     db.commit()
     db.refresh(session)
     return build_detail(db, session)
+
+
+@router.post(
+    "/workout-sessions/{session_id}/sync-plan", response_model=WorkoutSessionDetail
+)
+def sync_session_with_plan(
+    session_id: int,
+    current_user: CurrentUserDep,
+    db: DbSession,
+    language: str = Query(DEFAULT_LANG, max_length=10),
+) -> WorkoutSessionDetail:
+    """Make the session's exercise list match the plan it came from.
+
+    Starting a workout copies the day in, and the copy is what the session
+    records. That is right for history and wrong the moment the user edits the
+    day and comes back: they swapped an exercise in the calendar and the open
+    session still only offered the old one, with no way out of it.
+
+    So the list is re-synced when the workout is opened:
+
+      * planned exercises missing from the session are added, with their
+        target sets, exactly as `POST /workout-sessions` would have copied them
+      * exercises in the session that are no longer in the plan are removed,
+        **including ones with sets already logged** - dropping an exercise
+        from today's plan is the user saying they are not doing it, and
+        leaving a half-finished orphan behind contradicts that
+
+    What it deliberately does not do is re-copy an exercise that is still
+    planned. Those keep their logged sets: nothing about editing a *different*
+    row means the work already done should be thrown away.
+
+    A session with no `workout_day_id` has no plan to sync with and is
+    returned untouched.
+    """
+    session = get_owned_session(db, session_id, current_user.id)
+
+    if session.workout_day_id is None:
+        return build_detail(db, session)
+
+    day = db.get(WorkoutDay, session.workout_day_id)
+    if day is None:
+        # The plan was deleted; the session keeps what it recorded.
+        return build_detail(db, session)
+
+    planned = db.scalars(
+        select(WorkoutExercise)
+        .where(WorkoutExercise.workout_day_id == day.workout_day_id)
+        .order_by(WorkoutExercise.exercise_order)
+    ).all()
+    planned_ids = [we.exercise_id for we in planned]
+
+    existing = db.scalars(
+        select(SessionExercise)
+        .where(SessionExercise.session_id == session.session_id)
+        .order_by(SessionExercise.exercise_order)
+    ).all()
+    existing_by_exercise = {se.exercise_id: se for se in existing}
+
+    for session_exercise in existing:
+        if session_exercise.exercise_id not in planned_ids:
+            db.delete(session_exercise)
+
+    names = _exercise_names(db, planned_ids, language)
+
+    target_sets = db.scalars(
+        select(WorkoutExerciseSet)
+        .where(
+            WorkoutExerciseSet.workout_exercise_id.in_(
+                [we.workout_exercise_id for we in planned]
+            )
+        )
+        .order_by(WorkoutExerciseSet.workout_exercise_id, WorkoutExerciseSet.set_order)
+    ).all()
+    by_exercise: dict[int, list[WorkoutExerciseSet]] = {}
+    for target in target_sets:
+        by_exercise.setdefault(target.workout_exercise_id, []).append(target)
+
+    # Renumbered from the plan so the session reads in the order the calendar
+    # shows, however the rows got there.
+    for position, planned_exercise in enumerate(planned, start=1):
+        session_exercise = existing_by_exercise.get(planned_exercise.exercise_id)
+
+        if session_exercise is not None:
+            session_exercise.exercise_order = position
+            continue
+
+        session_exercise = SessionExercise(
+            session_id=session.session_id,
+            exercise_id=planned_exercise.exercise_id,
+            exercise_name=names.get(planned_exercise.exercise_id),
+            exercise_order=position,
+            notes=planned_exercise.notes,
+        )
+        db.add(session_exercise)
+        db.flush()
+
+        for set_position, target in enumerate(
+            by_exercise.get(planned_exercise.workout_exercise_id, []), start=1
+        ):
+            db.add(
+                SessionSet(
+                    session_exercise_id=session_exercise.session_exercise_id,
+                    set_order=set_position,
+                    completed=False,
+                    target_reps=target.target_reps,
+                    target_weight_kg=target.target_weight_kg,
+                    target_duration_seconds=target.target_duration_seconds,
+                    target_distance_m=target.target_distance_m,
+                    rest_seconds=target.rest_seconds,
+                    workout_exercise_set_id=target.workout_exercise_set_id,
+                )
+            )
+
+    db.commit()
+    db.refresh(session)
+    return build_detail(db, session)

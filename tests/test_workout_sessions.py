@@ -354,3 +354,98 @@ def test_reopening_an_active_session_is_idempotent(client: TestClient, owner):
     assert first.status_code == 200
     assert first.json()["status"] == "in_progress"
     assert first.json()["paused_seconds"] == 0
+
+
+# ============================================================
+# Keeping a session in step with the plan
+# ============================================================
+
+
+def test_syncing_brings_in_exercises_added_to_the_plan(
+    client: TestClient, owner, plan_with_day
+):
+    """Swapping an exercise in the calendar used to leave the open session
+    offering only the old one, with no way out of it."""
+    day_id = plan_with_day["day"]["workout_day_id"]
+    session = _start(client, owner, day_id)
+    assert len(session["exercises"]) == 1
+
+    client.post(
+        f"{API}/workout-days/{day_id}/exercises",
+        headers=owner,
+        json={"exercise_id": 2, "sets": [{"target_reps": 8}]},
+    )
+
+    synced = client.post(
+        f"{API}/workout-sessions/{session['session_id']}/sync-plan", headers=owner
+    )
+    assert synced.status_code == 200
+    assert [e["exercise_id"] for e in synced.json()["exercises"]] == [1, 2]
+
+
+def test_syncing_drops_an_exercise_taken_off_the_plan_even_if_logged(
+    client: TestClient, owner, plan_with_day
+):
+    """Taking an exercise off today's plan is the user saying they are not
+    doing it. A half-finished orphan left behind contradicts that."""
+    day_id = plan_with_day["day"]["workout_day_id"]
+    session = _start(client, owner, day_id)
+    set_id = session["exercises"][0]["sets"][0]["session_set_id"]
+
+    client.put(
+        f"{API}/session-sets/{set_id}",
+        headers=owner,
+        json={"reps": 10, "weight_kg": 40, "completed": True},
+    )
+
+    planned_id = plan_with_day["exercise"]["workout_exercise_id"]
+    assert (
+        client.delete(f"{API}/workout-exercises/{planned_id}", headers=owner)
+        .status_code
+        == 204
+    )
+
+    synced = client.post(
+        f"{API}/workout-sessions/{session['session_id']}/sync-plan", headers=owner
+    )
+    assert synced.status_code == 200
+    assert synced.json()["exercises"] == []
+
+
+def test_syncing_keeps_logged_sets_for_exercises_still_planned(
+    client: TestClient, owner, plan_with_day
+):
+    """Editing a *different* row is no reason to throw away work already done."""
+    day_id = plan_with_day["day"]["workout_day_id"]
+    session = _start(client, owner, day_id)
+    set_id = session["exercises"][0]["sets"][0]["session_set_id"]
+
+    client.put(
+        f"{API}/session-sets/{set_id}",
+        headers=owner,
+        json={"reps": 10, "weight_kg": 42.5, "completed": True},
+    )
+    client.post(
+        f"{API}/workout-days/{day_id}/exercises",
+        headers=owner,
+        json={"exercise_id": 2},
+    )
+
+    synced = client.post(
+        f"{API}/workout-sessions/{session['session_id']}/sync-plan", headers=owner
+    ).json()
+
+    kept = next(e for e in synced["exercises"] if e["exercise_id"] == 1)
+    logged = next(s for s in kept["sets"] if s["session_set_id"] == set_id)
+    assert float(logged["weight_kg"]) == 42.5
+    assert logged["completed"] is True
+
+
+def test_syncing_a_freehand_session_changes_nothing(client: TestClient, owner):
+    """A session started without a day has no plan to be in step with."""
+    session = _start(client, owner)
+    synced = client.post(
+        f"{API}/workout-sessions/{session['session_id']}/sync-plan", headers=owner
+    )
+    assert synced.status_code == 200
+    assert synced.json()["session_id"] == session["session_id"]

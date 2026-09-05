@@ -23,6 +23,10 @@ from app.schemas.workout_plans import (
 from app.services.exercise_translation import DEFAULT_LANG
 from app.services.workout_access import get_owned_plan
 from app.services.workout_dates import (
+    MAX_CONSECUTIVE_REST_DAYS,
+    TooManyRestDays,
+)
+from app.services.workout_dates import (
     find_day_for_date,
     replace_date_exercises,
     set_date_rest_day,
@@ -386,6 +390,14 @@ def set_plan_date_rest(
 
     try:
         day = set_date_rest_day(db, plan, current_user.id, on_date, payload.is_rest_day)
+    except TooManyRestDays as too_many:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"A plan cannot have more than {MAX_CONSECUTIVE_REST_DAYS} "
+                f"rest days in a row (this would make {too_many.run_length})"
+            ),
+        ) from None
     except ValueError:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
