@@ -7,6 +7,8 @@ from app.api.dependencies import BearerCredentialsDep, CurrentUserDep, DbSession
 from app.core.supabase_client import get_supabase, get_supabase_admin
 from app.models.user_profiles import UserProfile
 from app.schemas.auth import (
+    ChangeEmailRequest,
+    ChangePasswordRequest,
     AuthUser,
     ForgotPasswordRequest,
     LoginRequest,
@@ -167,3 +169,109 @@ def me(current_user: CurrentUserDep) -> MeResponse:
         ),
         role=current_user.role,
     )
+
+
+def _reauthenticate(email: str | None, password: str) -> None:
+    """Prove the caller knows the current password before changing anything.
+
+    An access token is not enough on its own. A phone left unlocked already
+    carries one, and "change the password" is exactly the move that locks the
+    real owner out of their own account.
+
+    The failure is reported as 401 rather than 403: the credential offered was
+    wrong, which is an authentication answer.
+    """
+    if not email:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This account has no email address to re-authenticate with",
+        )
+    try:
+        get_supabase().auth.sign_in_with_password(
+            {"email": email, "password": password}
+        )
+    except (AuthApiError, AuthError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Current password is incorrect",
+        ) from exc
+
+
+@router.put("/password", status_code=status.HTTP_204_NO_CONTENT)
+def change_password(
+    payload: ChangePasswordRequest,
+    current_user: CurrentUserDep,
+    credentials: BearerCredentialsDep,
+) -> Response:
+    """Set a new password, having checked the old one.
+
+    GoTrue owns password hashing, so this goes through the admin client rather
+    than touching any table - the same reason `app/models/users.py` maps
+    `auth.users` read-only.
+    """
+    _reauthenticate(current_user.email, payload.current_password)
+
+    if payload.new_password == payload.current_password:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="The new password is the same as the current one",
+        )
+
+    try:
+        get_supabase_admin().auth.admin.update_user_by_id(
+            str(current_user.id), {"password": payload.new_password}
+        )
+    except (AuthApiError, AuthError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=getattr(exc, "message", "Could not change the password"),
+        ) from exc
+
+    # Every other device keeps a refresh token that still works, and a password
+    # change is usually somebody trying to end exactly that. Signing the
+    # sessions out is the point of changing it.
+    try:
+        get_supabase_admin().auth.admin.sign_out(credentials.credentials)
+    except (AuthApiError, AuthError):
+        # The password did change; failing the request now would tell the user
+        # the opposite of what happened.
+        pass
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.put("/email", status_code=status.HTTP_204_NO_CONTENT)
+def change_email(
+    payload: ChangeEmailRequest,
+    current_user: CurrentUserDep,
+) -> Response:
+    """Change the address the account signs in with.
+
+    Whether the new address has to be confirmed before it takes effect is a
+    Supabase project setting, not something this endpoint decides - so the
+    response deliberately promises nothing about when the change lands.
+    """
+    _reauthenticate(current_user.email, payload.current_password)
+
+    if payload.new_email.lower() == (current_user.email or "").lower():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="That is already the address on this account",
+        )
+
+    try:
+        get_supabase_admin().auth.admin.update_user_by_id(
+            str(current_user.id), {"email": payload.new_email}
+        )
+    except (AuthApiError, AuthError) as exc:
+        message = getattr(exc, "message", "Could not change the email")
+        # A duplicate address is the one failure worth naming precisely; the
+        # rest are passed through as GoTrue phrased them.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT
+            if "already" in message.lower()
+            else status.HTTP_400_BAD_REQUEST,
+            detail=message,
+        ) from exc
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

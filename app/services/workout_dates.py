@@ -19,7 +19,7 @@ a date must affect that date only.
 from __future__ import annotations
 
 import uuid
-from datetime import date
+from datetime import date, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -87,6 +87,63 @@ def create_day_for_date(
     return day
 
 
+# Three is a rest week's worth of consecutive days off; a fourth is somebody
+# drifting out of the habit rather than recovering, and a plan that lets it
+# through is not a plan any more.
+MAX_CONSECUTIVE_REST_DAYS = 3
+
+
+class TooManyRestDays(ValueError):
+    """Marking this date would make a run of rest days too long."""
+
+    def __init__(self, run_length: int) -> None:
+        super().__init__(f"{run_length} consecutive rest days")
+        self.run_length = run_length
+
+
+def _rest_run_length(
+    db: Session, plan_id: int, on_date: date
+) -> int:
+    """How long a run of rest days marking `on_date` would sit in.
+
+    Counts outwards in both directions, because a rest day can be ticked in
+    the middle of a gap as easily as at the end of one - three off, then a
+    fourth inserted between two of them, is still four in a row.
+
+    A date with no row at all breaks the run: an unplanned day is not a rest
+    day, which is the whole reason rest is stored as a row.
+    """
+    window_start = on_date - timedelta(days=MAX_CONSECUTIVE_REST_DAYS)
+    window_end = on_date + timedelta(days=MAX_CONSECUTIVE_REST_DAYS)
+
+    rest_dates = {
+        scheduled
+        for (scheduled,) in db.execute(
+            select(Schedule.scheduled_date)
+            .join(WorkoutDay, WorkoutDay.workout_day_id == Schedule.workout_day_id)
+            .where(
+                WorkoutDay.plan_id == plan_id,
+                WorkoutDay.is_rest_day.is_(True),
+                Schedule.scheduled_date.is_not(None),
+                Schedule.scheduled_date >= window_start,
+                Schedule.scheduled_date <= window_end,
+            )
+        ).all()
+    }
+    rest_dates.add(on_date)
+
+    run = 1
+    cursor = on_date - timedelta(days=1)
+    while cursor in rest_dates:
+        run += 1
+        cursor -= timedelta(days=1)
+    cursor = on_date + timedelta(days=1)
+    while cursor in rest_dates:
+        run += 1
+        cursor += timedelta(days=1)
+    return run
+
+
 def set_date_rest_day(
     db: Session,
     plan: WorkoutPlan,
@@ -103,6 +160,13 @@ def set_date_rest_day(
     removed - the same rule that removes a date when its last exercise goes.
     """
     day = find_day_for_date(db, plan.plan_id, on_date)
+
+    if is_rest_day and not (day is not None and day.is_rest_day):
+        # Checked before anything is written, and skipped when the date is
+        # already a rest day - re-ticking what is already ticked must not fail.
+        run = _rest_run_length(db, plan.plan_id, on_date)
+        if run > MAX_CONSECUTIVE_REST_DAYS:
+            raise TooManyRestDays(run)
 
     if is_rest_day:
         if day is None:

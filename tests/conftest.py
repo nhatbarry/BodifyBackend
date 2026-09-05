@@ -111,6 +111,39 @@ def account(client: TestClient) -> Callable[[], dict[str, str]]:
 
 
 @pytest.fixture
+def credentials(client: TestClient) -> Callable[[], dict[str, str]]:
+    """Like `account`, but hands back the email and password too.
+
+    Needed only by the tests that change credentials: everything else wants
+    headers and nothing more, and widening `account` would make every other
+    test read `account()["headers"]` for no reason.
+    """
+
+    def make() -> dict[str, str]:
+        email = f"{TEST_EMAIL_PREFIX}{uuid.uuid4().hex[:12]}@example.com"
+        response = client.post(
+            f"{API}/auth/register",
+            json={"email": email, "password": PASSWORD, "name": "Pytest"},
+        )
+        assert response.status_code < 400, response.text
+
+        token = (response.json().get("session") or {}).get("access_token")
+        if not token:
+            token = client.post(
+                f"{API}/auth/login",
+                json={"email": email, "password": PASSWORD},
+            ).json()["access_token"]
+
+        return {
+            "email": email,
+            "password": PASSWORD,
+            "headers": {"Authorization": f"Bearer {token}"},
+        }
+
+    return make
+
+
+@pytest.fixture
 def owner(account: Callable[[], dict[str, str]]) -> dict[str, str]:
     return account()
 

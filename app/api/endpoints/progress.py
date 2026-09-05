@@ -28,15 +28,18 @@ from app.models.progress import (
 )
 from app.schemas.progress import (
     AchievementRead,
+    ActivityDayRead,
     ExerciseProgressionRead,
     PersonalBestRead,
     PersonalRecordRead,
     ProgressPointRead,
     ProgressSummaryRead,
+    RecentExerciseRead,
 )
 from app.services import achievements as achievement_service
 from app.services import progress as progress_service
 from app.services.exercise_translation import DEFAULT_LANG, best_translation
+from app.services.exercise_media import list_image_urls
 
 router = APIRouter(tags=["progress"])
 
@@ -88,6 +91,69 @@ def get_progress_summary(
     _validate_range(from_date, to_date)
     result = progress_service.summary(db, current_user.id, from_date, to_date)
     return ProgressSummaryRead(**result.__dict__)
+
+
+@router.get("/progress/activity", response_model=list[ActivityDayRead])
+def get_recent_activity(
+    current_user: CurrentUserDep,
+    db: DbSession,
+    # Up to a year: the home screen's grid sizes itself to the card and
+    # asks for as many weeks as it can draw, which is more than a quarter
+    # once the squares are GitHub-sized.
+    days: int = Query(default=7, ge=1, le=366),
+) -> list[ActivityDayRead]:
+    """Training done on each of the last `days` days, oldest first.
+
+    Untrained days come back too, with zeroes. A rest day is part of the shape
+    of a week, and a strip with holes punched in it cannot be read.
+    """
+    return [
+        ActivityDayRead(**day.__dict__)
+        for day in progress_service.recent_activity(db, current_user.id, days)
+    ]
+
+
+@router.get("/progress/recent-exercises", response_model=list[RecentExerciseRead])
+def get_recent_exercises(
+    current_user: CurrentUserDep,
+    db: DbSession,
+    limit: int = Query(default=4, ge=1, le=20),
+    language: str = Query(DEFAULT_LANG, max_length=10),
+) -> list[RecentExerciseRead]:
+    """The exercises trained most recently, newest first.
+
+    Names come from the catalog rather than the session snapshot: this is a
+    "what have I been doing lately" list about exercises as they are called
+    today, not a history entry that has to keep reading the way it read then.
+    """
+    rows = progress_service.recent_exercises(db, current_user.id, limit)
+    if not rows:
+        return []
+
+    exercise_ids = [row.exercise_id for row in rows]
+    names = _names(db, exercise_ids, language)
+    images = list_image_urls(db, exercise_ids)
+
+    return [
+        RecentExerciseRead(
+            exercise_id=row.exercise_id,
+            name=names.get(row.exercise_id),
+            tracking_type=row.tracking_type,
+            # Icon first, thumbnail as the fallback - the same rule the lists use.
+            thumbnail_url=(
+                images.get(row.exercise_id, (None, None))[0]
+                or images.get(row.exercise_id, (None, None))[1]
+            ),
+            day=row.day,
+            session_id=row.session_id,
+            set_count=row.set_count,
+            total_reps=row.total_reps,
+            total_volume_kg=row.total_volume_kg,
+            best_duration_seconds=row.best_duration_seconds,
+            best_distance_m=row.best_distance_m,
+        )
+        for row in rows
+    ]
 
 
 @router.get(
