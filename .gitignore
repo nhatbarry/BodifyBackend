@@ -82,3 +82,7 @@ r2 upload
 media/
 api_list.md
 CLAUDE.md
+# Database dumps for the hosted-Supabase migration. Schema is worth keeping;
+# the multi-MB catalog dumps are regenerable from sql_script + the live DB.
+migrate/*.sql
+migrate/dump.err
