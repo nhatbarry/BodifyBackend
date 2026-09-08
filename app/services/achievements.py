@@ -256,6 +256,55 @@ def completed_plan_count(db: Session, user_id: uuid.UUID) -> int:
     return completed
 
 
+def measure(
+    db: Session,
+    user_id: uuid.UUID,
+    achievement: Achievement,
+    cache: dict[str, float],
+) -> float:
+    """The user's current figure for one achievement's requirement.
+
+    The single place that maps an achievement type to the query answering it.
+    This used to be written twice - once to decide unlocks, once to report
+    progress on the read endpoint - and the two drifted the moment a type was
+    added: the badge unlocked correctly while the screen showed 0 progress
+    towards it, which reads as a bug in the badge.
+
+    `cache` is the caller's, so several tiers of the same badge - three
+    workout-count thresholds - ask the question once between them.
+    """
+    kind = achievement.achievement_type
+
+    if kind == EXERCISE_DURATION:
+        # Keyed per exercise: two plank tiers ask about the same movement, but
+        # a future badge for another hold must not reuse the answer.
+        key = f"{kind}:{achievement.exercise_id}"
+        if key not in cache:
+            cache[key] = float(
+                best_duration_for_exercise(db, user_id, achievement.exercise_id)
+                if achievement.exercise_id is not None
+                else 0
+            )
+        return cache[key]
+
+    if kind not in cache:
+        if kind == WORKOUT_COUNT:
+            cache[kind] = float(completed_workout_count(db, user_id))
+        elif kind == WORKOUT_STREAK:
+            cache[kind] = float(longest_streak(workout_dates(db, user_id)))
+        elif kind == TOTAL_VOLUME:
+            cache[kind] = total_volume_kg(db, user_id)
+        elif kind == PERSONAL_RECORD:
+            cache[kind] = float(personal_record_count(db, user_id))
+        elif kind == PLAN_COMPLETION:
+            cache[kind] = float(completed_plan_count(db, user_id))
+        elif kind == AI_FORM_QUALITY:
+            cache[kind] = float(good_form_set_count(db, user_id))
+        else:
+            cache[kind] = 0.0
+    return cache[kind]
+
+
 def evaluate(db: Session, user_id: uuid.UUID) -> list[Achievement]:
     """Unlock whatever the user now qualifies for. Returns the new unlocks.
 
@@ -286,42 +335,10 @@ def evaluate(db: Session, user_id: uuid.UUID) -> list[Achievement]:
     # question with different thresholds.
     measured: dict[str, float] = {}
 
-    def measure(achievement: Achievement) -> float:
-        kind = achievement.achievement_type
-
-        if kind == EXERCISE_DURATION:
-            # Keyed per exercise: two plank tiers ask about the same movement,
-            # but a future badge for another hold must not reuse the answer.
-            key = f"{kind}:{achievement.exercise_id}"
-            if key not in measured:
-                measured[key] = float(
-                    best_duration_for_exercise(db, user_id, achievement.exercise_id)
-                    if achievement.exercise_id is not None
-                    else 0
-                )
-            return measured[key]
-
-        if kind not in measured:
-            if kind == WORKOUT_COUNT:
-                measured[kind] = float(completed_workout_count(db, user_id))
-            elif kind == WORKOUT_STREAK:
-                measured[kind] = float(longest_streak(workout_dates(db, user_id)))
-            elif kind == TOTAL_VOLUME:
-                measured[kind] = total_volume_kg(db, user_id)
-            elif kind == PERSONAL_RECORD:
-                measured[kind] = float(personal_record_count(db, user_id))
-            elif kind == PLAN_COMPLETION:
-                measured[kind] = float(completed_plan_count(db, user_id))
-            elif kind == AI_FORM_QUALITY:
-                measured[kind] = float(good_form_set_count(db, user_id))
-            else:
-                measured[kind] = 0.0
-        return measured[kind]
-
     unlocked: list[Achievement] = []
 
     for achievement in pending:
-        value = measure(achievement)
+        value = measure(db, user_id, achievement, measured)
         if value < float(achievement.requirement_value):
             continue
 
