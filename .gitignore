@@ -46,6 +46,9 @@ htmlcov/
 *.swp
 *.swo
 
+# Claude Code personal settings (local hooks, etc.)
+.claude/settings.local.json
+
 # Dev Containers
 .devcontainer/*.local.json
 
