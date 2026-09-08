@@ -39,6 +39,7 @@ EMPTY_SUMMARY = SessionSummary(
 def _set_read(row: SessionSet) -> SessionSetRead:
     result = SessionSetRead.model_validate(row)
     result.volume_kg = row.volume_kg
+    result.ai_score_percent = row.ai_score_percent
     return result
 
 
@@ -145,13 +146,14 @@ def build_exercise_reads(
     ids = [se.session_exercise_id for se in session_exercises]
     exercise_ids = [se.exercise_id for se in session_exercises]
     images = list_image_urls(db, exercise_ids)
-    tracking = dict(
-        db.execute(
-            select(Exercise.exercise_id, Exercise.tracking_type).where(
-                Exercise.exercise_id.in_(set(exercise_ids))
-            )
+    catalog = {
+        exercise_id: (tracking_type, ai_algorithm)
+        for exercise_id, tracking_type, ai_algorithm in db.execute(
+            select(
+                Exercise.exercise_id, Exercise.tracking_type, Exercise.ai_algorithm
+            ).where(Exercise.exercise_id.in_(set(exercise_ids)))
         ).all()
-    )
+    }
 
     sets_by_exercise: dict[int, list[SessionSetRead]] = defaultdict(list)
     for row in db.scalars(
@@ -173,7 +175,8 @@ def build_exercise_reads(
                 images.get(se.exercise_id, (None, None))[0]
                 or images.get(se.exercise_id, (None, None))[1]
             ),
-            tracking_type=tracking.get(se.exercise_id, "reps"),
+            tracking_type=catalog.get(se.exercise_id, ("reps", None))[0],
+            ai_algorithm=catalog.get(se.exercise_id, ("reps", None))[1],
             sets=sets_by_exercise.get(se.session_exercise_id, []),
         )
         for se in session_exercises

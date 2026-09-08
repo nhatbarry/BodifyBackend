@@ -51,13 +51,14 @@ def build_exercise_reads(
     }
 
     images = list_image_urls(db, exercise_ids)
-    tracking = dict(
-        db.execute(
-            select(Exercise.exercise_id, Exercise.tracking_type).where(
-                Exercise.exercise_id.in_(set(exercise_ids))
-            )
+    catalog = {
+        exercise_id: (tracking_type, ai_algorithm)
+        for exercise_id, tracking_type, ai_algorithm in db.execute(
+            select(
+                Exercise.exercise_id, Exercise.tracking_type, Exercise.ai_algorithm
+            ).where(Exercise.exercise_id.in_(set(exercise_ids)))
         ).all()
-    )
+    }
 
     sets_by_exercise: dict[int, list[WorkoutSetRead]] = defaultdict(list)
     for row in db.scalars(
@@ -82,7 +83,8 @@ def build_exercise_reads(
                 notes=we.notes,
                 name=name,
                 language=translation_language,
-                tracking_type=tracking.get(we.exercise_id, "reps"),
+                tracking_type=catalog.get(we.exercise_id, ("reps", None))[0],
+                ai_algorithm=catalog.get(we.exercise_id, ("reps", None))[1],
                 icon_url=images.get(we.exercise_id, (None, None))[0],
                 thumbnail_url=images.get(we.exercise_id, (None, None))[1],
                 sets=sets_by_exercise.get(we.workout_exercise_id, []),

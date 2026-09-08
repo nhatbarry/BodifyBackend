@@ -313,6 +313,8 @@ def add_session_exercise(
                 target_reps=performed.target_reps,
                 target_weight_kg=performed.target_weight_kg,
                 workout_exercise_set_id=performed.workout_exercise_set_id,
+                ai_algorithm=performed.ai_algorithm,
+                ai_rep_scores=performed.ai_rep_scores,
                 notes=performed.notes,
             )
         )

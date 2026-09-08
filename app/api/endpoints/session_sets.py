@@ -18,6 +18,7 @@ router = APIRouter(tags=["session-sets"])
 def _read(row: SessionSet) -> SessionSetRead:
     result = SessionSetRead.model_validate(row)
     result.volume_kg = row.volume_kg
+    result.ai_score_percent = row.ai_score_percent
     return result
 
 
@@ -75,6 +76,10 @@ def log_set(
         target_duration_seconds=payload.target_duration_seconds,
         target_distance_m=payload.target_distance_m,
         workout_exercise_set_id=payload.workout_exercise_set_id,
+        # Only set when the camera recorded this set; a hand-logged set leaves
+        # both null. Snapshots, like target_*: PUT will not revise them.
+        ai_algorithm=payload.ai_algorithm,
+        ai_rep_scores=payload.ai_rep_scores,
         notes=payload.notes,
     )
     db.add(performed)

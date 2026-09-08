@@ -20,6 +20,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from app.models.progress import (
+    AI_FORM_QUALITY,
     EXERCISE_DURATION,
     PERSONAL_RECORD,
     PLAN_COMPLETION,
@@ -154,6 +155,50 @@ def best_duration_for_exercise(
     )
 
 
+#: A set the camera judged as good form. 90 rather than 100 because a single
+#: half-depth rep in an otherwise clean set of ten is not bad form, and a badge
+#: that only fires on perfection is one nobody sees.
+GOOD_FORM_PERCENT = 90
+
+
+def good_form_set_count(db: Session, user_id: uuid.UUID) -> int:
+    """Sets recorded through the AI camera that scored at least 90%.
+
+    The score is derived here rather than read from a column, for the same
+    reason every other measure is a query: `ai_rep_scores` is the fact, and a
+    stored percentage would be a second copy of it that can drift.
+
+    Sets logged by hand have no scores and are not counted - not as failures
+    either, they simply were not judged.
+    """
+    rows = db.execute(
+        select(SessionSet.ai_rep_scores)
+        .select_from(SessionSet)
+        .join(
+            SessionExercise,
+            SessionExercise.session_exercise_id == SessionSet.session_exercise_id,
+        )
+        .join(
+            WorkoutSession,
+            WorkoutSession.session_id == SessionExercise.session_id,
+        )
+        .where(
+            WorkoutSession.user_id == user_id,
+            WorkoutSession.status == COMPLETED,
+            SessionSet.completed.is_(True),
+            SessionSet.ai_rep_scores.is_not(None),
+        )
+    ).scalars().all()
+
+    good = 0
+    for scores in rows:
+        if not scores:
+            continue
+        if sum(scores) / (len(scores) * 100) * 100 >= GOOD_FORM_PERCENT:
+            good += 1
+    return good
+
+
 def personal_record_count(db: Session, user_id: uuid.UUID) -> int:
     """How many distinct records the user currently holds."""
     return (
@@ -267,6 +312,8 @@ def evaluate(db: Session, user_id: uuid.UUID) -> list[Achievement]:
                 measured[kind] = float(personal_record_count(db, user_id))
             elif kind == PLAN_COMPLETION:
                 measured[kind] = float(completed_plan_count(db, user_id))
+            elif kind == AI_FORM_QUALITY:
+                measured[kind] = float(good_form_set_count(db, user_id))
             else:
                 measured[kind] = 0.0
         return measured[kind]
