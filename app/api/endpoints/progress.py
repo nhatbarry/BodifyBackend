@@ -15,12 +15,6 @@ from sqlalchemy import select
 from app.api.dependencies import CurrentUserDep, DbSession
 from app.models.exercises import Exercise
 from app.models.progress import (
-    EXERCISE_DURATION,
-    PERSONAL_RECORD,
-    PLAN_COMPLETION,
-    TOTAL_VOLUME,
-    WORKOUT_COUNT,
-    WORKOUT_STREAK,
     Achievement,
     PersonalBest,
     PersonalRecord,
@@ -288,47 +282,6 @@ def list_achievements(
     # it - three workout-count tiers ask the same question.
     cache: dict[str, float] = {}
 
-    def current_value(achievement: Achievement) -> float:
-        kind = achievement.achievement_type
-        if kind == EXERCISE_DURATION:
-            key = f"{kind}:{achievement.exercise_id}"
-            if key not in cache:
-                cache[key] = float(
-                    achievement_service.best_duration_for_exercise(
-                        db, current_user.id, achievement.exercise_id
-                    )
-                    if achievement.exercise_id is not None
-                    else 0
-                )
-            return cache[key]
-
-        if kind not in cache:
-            if kind == WORKOUT_COUNT:
-                cache[kind] = float(
-                    achievement_service.completed_workout_count(db, current_user.id)
-                )
-            elif kind == WORKOUT_STREAK:
-                cache[kind] = float(
-                    achievement_service.longest_streak(
-                        achievement_service.workout_dates(db, current_user.id)
-                    )
-                )
-            elif kind == TOTAL_VOLUME:
-                cache[kind] = achievement_service.total_volume_kg(
-                    db, current_user.id
-                )
-            elif kind == PERSONAL_RECORD:
-                cache[kind] = float(
-                    achievement_service.personal_record_count(db, current_user.id)
-                )
-            elif kind == PLAN_COMPLETION:
-                cache[kind] = float(
-                    achievement_service.completed_plan_count(db, current_user.id)
-                )
-            else:
-                cache[kind] = 0.0
-        return cache[kind]
-
     result: list[AchievementRead] = []
     for achievement in catalog:
         row = unlocked.get(achievement.achievement_id)
@@ -345,7 +298,12 @@ def list_achievements(
                 exercise_id=achievement.exercise_id,
                 unlocked=row is not None,
                 achieved_at=row.achieved_at if row else None,
-                current_value=current_value(achievement),
+                # The same function that decides unlocks at finish, so a locked
+                # badge's progress and the figure that eventually unlocks it
+                # cannot disagree.
+                current_value=achievement_service.measure(
+                    db, current_user.id, achievement, cache
+                ),
             )
         )
     return result
