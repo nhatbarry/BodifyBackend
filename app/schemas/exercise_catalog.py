@@ -39,6 +39,9 @@ class ExerciseListItem(BaseModel):
     # reps | duration | distance | reps_duration. `exercise_type` cannot answer
     # this - Bench Press and Plank are both 'Strength'.
     tracking_type: str = "reps"
+    # Which camera algorithm can count and score this movement, or null if the
+    # exercise has no AI support. The lists use it to show the "AI" tag.
+    ai_algorithm: str | None = None
     mechanics: str | None = None
     force_type: str | None = None
     experience_level: str | None = None
@@ -57,6 +60,8 @@ class ExerciseDetail(BaseModel):
     tips: str | None = None
 
     exercise_type: str | None = None
+    tracking_type: str = "reps"
+    ai_algorithm: str | None = None
     mechanics: str | None = None
     force_type: str | None = None
     experience_level: str | None = None

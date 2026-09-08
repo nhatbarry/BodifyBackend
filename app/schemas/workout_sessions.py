@@ -4,7 +4,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 SessionStatus = Literal["in_progress", "paused", "completed", "abandoned"]
 
@@ -43,7 +43,26 @@ class SessionSetCreate(BaseModel):
     )
     workout_exercise_set_id: int | None = None
 
+    # Filled in only when the set was recorded through the AI camera: which
+    # algorithm counted it, and what each rep scored (0, 50 or 100 by depth).
+    # A set logged by hand leaves both null.
+    ai_algorithm: str | None = Field(default=None, max_length=50)
+    ai_rep_scores: list[int] | None = None
+
     notes: str | None = None
+
+    @field_validator("ai_rep_scores")
+    @classmethod
+    def _scores_are_milestones(cls, value: list[int] | None) -> list[int] | None:
+        """A rep is worth 0, 50 or 100 - the two depth milestones and a miss.
+
+        Rejected rather than clamped: any other number means the client and the
+        server disagree about the scoring rule, and silently accepting it would
+        put a figure in the history that nothing can explain.
+        """
+        if value is not None and any(score not in (0, 50, 100) for score in value):
+            raise ValueError("each rep score must be 0, 50 or 100")
+        return value
 
 
 class SessionSetUpdate(BaseModel):
@@ -51,6 +70,10 @@ class SessionSetUpdate(BaseModel):
 
     The target values are deliberately absent: they are a snapshot of what the
     plan said at the time, not something the user gets to revise afterwards.
+    The `ai_*` fields are absent for the same reason - they record how the
+    camera judged the set as it happened, which a later correction to the reps
+    does not entitle anyone to rewrite.
+
     Omitting a key keeps its value; sending null clears it.
     """
 
@@ -86,10 +109,16 @@ class SessionSetRead(BaseModel):
     target_distance_m: Decimal | None = None
     workout_exercise_set_id: int | None
 
+    ai_algorithm: str | None = None
+    ai_rep_scores: list[int] | None = None
+
     notes: str | None
 
     # reps x weight, computed on read.
     volume_kg: Decimal | None = None
+    # Total rep score against the most this set could have scored, 0-100.
+    # Null for a set logged by hand. Computed on read, like volume_kg.
+    ai_score_percent: Decimal | None = None
 
 
 # ============================================================
@@ -124,6 +153,12 @@ class SessionExerciseRead(BaseModel):
     # the movement, not the performance, and correcting it should correct
     # every screen at once.
     tracking_type: str = "reps"
+
+    # Which camera algorithm can score this movement, or null if none can.
+    # Read live from the catalog for the same reason `tracking_type` is: it
+    # describes the movement, and the client uses it to decide whether to offer
+    # the AI camera at all.
+    ai_algorithm: str | None = None
 
     sets: list[SessionSetRead]
 

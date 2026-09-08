@@ -186,6 +186,10 @@ TOTAL_VOLUME = "total_volume"
 EXERCISE_DURATION = "exercise_duration"
 PERSONAL_RECORD = "personal_record"
 PLAN_COMPLETION = "plan_completion"
+# Sets the camera judged as good form. Deliberately not a personal record:
+# a form score says how a movement was performed, not how much was lifted, and
+# mixing it into "my PRs" would put a percentage next to kilograms.
+AI_FORM_QUALITY = "ai_form_quality"
 
 ACHIEVEMENT_TYPES = (
     WORKOUT_COUNT,
@@ -194,6 +198,7 @@ ACHIEVEMENT_TYPES = (
     EXERCISE_DURATION,
     PERSONAL_RECORD,
     PLAN_COMPLETION,
+    AI_FORM_QUALITY,
 )
 
 _ACHIEVEMENT_TYPE_SQL = ", ".join(f"'{t}'" for t in ACHIEVEMENT_TYPES)

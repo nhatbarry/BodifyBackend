@@ -31,6 +31,16 @@ class Exercise(Base):
     tracking_type: Mapped[str] = mapped_column(
         String(20), nullable=False, server_default="reps"
     )
+
+    # Which client-side pose-detection algorithm can count and score this
+    # movement from the camera, e.g. 'pushup_v1'. NULL means the exercise has
+    # no AI support yet, which is the case for all but a handful.
+    #
+    # Deliberately free text with no CHECK: the vocabulary lives in the Flutter
+    # processor factory and grows with every new algorithm, and an unrecognised
+    # value already degrades safely there to "not supported".
+    ai_algorithm: Mapped[str | None] = mapped_column(String(50))
+
     experience_level: Mapped[str | None] = mapped_column(String(30))
 
     overview: Mapped[str | None] = mapped_column(Text)

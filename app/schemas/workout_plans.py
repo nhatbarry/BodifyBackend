@@ -103,6 +103,9 @@ class WorkoutExerciseRead(BaseModel):
     # for reps, seconds or metres. Read live from the catalog: it describes the
     # movement, not the plan.
     tracking_type: str = "reps"
+    # Which camera algorithm can score this movement, null if none can. Read
+    # live from the catalog for the same reason tracking_type is.
+    ai_algorithm: str | None = None
     # Null for the 16 exercises with no thumbnail on file.
     thumbnail_url: str | None
 
