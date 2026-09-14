@@ -36,7 +36,13 @@ from app.schemas.chat import (
     ChatSessionDetail,
     ChatSessionListItem,
 )
-from app.services.gemini import AiCoachUnavailable, generate_reply
+from app.services import coach_context
+from app.services.exercise_translation import DEFAULT_LANG
+from app.services.gemini import (
+    AiCoachQuotaExceeded,
+    AiCoachUnavailable,
+    generate_reply,
+)
 
 router = APIRouter(tags=["ai-coach"])
 
@@ -82,7 +88,10 @@ def _title_from(question: str) -> str:
 
 
 async def _answer(
-    db: Session, session: ChatSession, content: str
+    db: Session,
+    session: ChatSession,
+    content: str,
+    language: str = DEFAULT_LANG,
 ) -> ChatReply:
     """Saves the question, asks the model, saves the answer."""
     question = ChatMessage(
@@ -113,8 +122,19 @@ async def _answer(
         ).all()
     ][::-1]  # oldest first, which is the order a conversation is read in
 
+    # Rebuilt on every message rather than cached on the session: the user may
+    # have finished a workout between two questions, and a coach quoting last
+    # week's numbers at them is worse than one that is slightly slower.
+    context = coach_context.build(db, session.user_id, language)
+
     try:
-        reply_text = await generate_reply(history, content)
+        reply_text = await generate_reply(history, content, context=context)
+    except AiCoachQuotaExceeded as exc:
+        # 429, not 503: the user can act on this one by waiting, and the app
+        # should say so rather than report a server fault.
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(exc)
+        ) from exc
     except AiCoachUnavailable as exc:
         # 503, not 500: nothing is wrong with the request, and the client
         # should offer to try again rather than report a bug.
@@ -216,6 +236,9 @@ async def start_chat_session(
     payload: ChatSessionCreate,
     current_user: CurrentUserDep,
     db: DbSession,
+    # Only decides which language the exercise names in the context block are
+    # written in; the coach answers in whatever language the question used.
+    language: str = Query(DEFAULT_LANG, max_length=10),
 ):
     """Starts a conversation, optionally with its first question.
 
@@ -238,7 +261,7 @@ async def start_chat_session(
             messages=[],
         )
 
-    return await _answer(db, session, payload.content)
+    return await _answer(db, session, payload.content, language)
 
 
 @router.post(
@@ -249,10 +272,11 @@ async def send_chat_message(
     payload: ChatMessageCreate,
     current_user: CurrentUserDep,
     db: DbSession,
+    language: str = Query(DEFAULT_LANG, max_length=10),
 ) -> ChatReply:
     """Asks the coach something in an existing conversation."""
     session = _owned_session(db, chat_session_id, current_user.id)
-    return await _answer(db, session, payload.content)
+    return await _answer(db, session, payload.content, language)
 
 
 @router.delete(
