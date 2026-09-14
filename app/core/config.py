@@ -51,10 +51,18 @@ class Settings(BaseSettings):
     # request as an opaque error from Google.
     gemini_api_key: str | None = None
 
-    # Which model answers. Flash rather than Pro: a coaching reply is short,
-    # the user is waiting for it, and the price difference is an order of
-    # magnitude at the volume a chat screen produces.
-    gemini_model: str = "gemini-2.5-flash"
+    # Which model answers. Flash-Lite rather than Flash or Pro, because of
+    # what this job actually is: the coach is handed the user's numbers and
+    # writes four sentences about them. That is phrasing, not reasoning -
+    # which is also why thinking is switched off in services/gemini.py. Paying
+    # for a stronger model to do work we have deliberately stopped it thinking
+    # about buys nothing.
+    #
+    # 3.1 rather than 3.5: same family, lower price ($0.25/$1.50 against
+    # $0.30/$2.50 per MTok). The 3.8 Flash on the price list is cheaper still
+    # today, but it is built for long-horizon coding and its introductory rate
+    # doubles in January 2027.
+    gemini_model: str = "gemini-3.1-flash-lite"
 
     @property
     def can_use_ai_coach(self) -> bool:

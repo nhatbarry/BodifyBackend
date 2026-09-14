@@ -17,3 +17,7 @@ STORAGE_WRITE_BUCKET=
 
 # AI coach (Gemini). Server-side only - never shipped to the app.
 GEMINI_API_KEY=
+
+# Which model answers. Flash-Lite is enough: the coach is handed the
+# numbers and writes four sentences about them.
+GEMINI_MODEL=gemini-3.1-flash-lite
