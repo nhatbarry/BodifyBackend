@@ -42,6 +42,24 @@ class Settings(BaseSettings):
     # at content users put there themselves.
     storage_write_bucket: str | None = None
 
+    # The AI coach's model key. Server-side only, and that is the point: the
+    # Kotlin prototype shipped this key inside the app, where anyone who
+    # unzips the APK can read it and spend it.
+    #
+    # Optional, like the write credentials above. Left blank, the chat
+    # endpoints answer 503 with a reason rather than failing inside the
+    # request as an opaque error from Google.
+    gemini_api_key: str | None = None
+
+    # Which model answers. Flash rather than Pro: a coaching reply is short,
+    # the user is waiting for it, and the price difference is an order of
+    # magnitude at the volume a chat screen produces.
+    gemini_model: str = "gemini-2.5-flash"
+
+    @property
+    def can_use_ai_coach(self) -> bool:
+        return bool(self.gemini_api_key)
+
     @property
     def can_write_storage(self) -> bool:
         return bool(

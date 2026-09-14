@@ -14,3 +14,6 @@ STORAGE_BUCKET=
 STORAGE_WRITE_ACCESS_KEY=
 STORAGE_WRITE_SECRET_KEY=
 STORAGE_WRITE_BUCKET=
+
+# AI coach (Gemini). Server-side only - never shipped to the app.
+GEMINI_API_KEY=

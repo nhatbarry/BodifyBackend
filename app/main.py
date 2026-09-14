@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 
 from app.api.endpoints import (
+    ai_coach,
     auth,
     body_metrics,
     equipment,
@@ -49,6 +50,11 @@ app.include_router(session_sets.router, prefix=API_V1_PREFIX)
 
 # Phase 4: what the record adds up to.
 app.include_router(progress.router, prefix=API_V1_PREFIX)
+
+# Phase 6: the AI coach. The model is called from here, never from the app -
+# the key lives in this server's environment and the conversation history is
+# read from the database rather than taken from the request.
+app.include_router(ai_coach.router, prefix=API_V1_PREFIX)
 
 
 @app.get("/")
