@@ -89,3 +89,6 @@ CLAUDE.md
 # the multi-MB catalog dumps are regenerable from sql_script + the live DB.
 migrate/*.sql
 migrate/dump.err
+
+# Reference archives dropped in for research, not part of the project.
+*.zip
