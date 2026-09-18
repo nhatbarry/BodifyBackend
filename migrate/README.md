@@ -133,7 +133,7 @@ docker exec supabase_db_BodifyBackend pg_dump -U postgres -d postgres \
 
 `staging_exercises` and `staging_exercises_vie` are excluded on purpose: they
 are the raw CSV the catalog was imported from, 704 rows and 2.9 MB each, and
-nothing reads them. They are also the tables CLAUDE.md warns about, the ones
+nothing reads them. They are also the tables the project notes warn about, the ones
 `pg_stat_user_tables` reported as empty when they were not.
 
 ## One code change this needed

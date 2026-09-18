@@ -46,9 +46,6 @@ htmlcov/
 *.swp
 *.swo
 
-# Claude Code personal settings (local hooks, etc.)
-.claude/settings.local.json
-
 # Dev Containers
 .devcontainer/*.local.json
 
@@ -84,7 +81,6 @@ logs/
 r2 upload
 media/
 api_list.md
-CLAUDE.md
 # Database dumps for the hosted-Supabase migration. Schema is worth keeping;
 # the multi-MB catalog dumps are regenerable from sql_script + the live DB.
 migrate/*.sql
