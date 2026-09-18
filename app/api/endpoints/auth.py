@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException, Response, status
 from supabase_auth.errors import AuthApiError, AuthError
 
 from app.api.dependencies import BearerCredentialsDep, CurrentUserDep, DbSession
+from app.core.config import settings
 from app.core.supabase_client import get_supabase, get_supabase_admin
 from app.models.user_profiles import UserProfile
 from app.schemas.auth import (
@@ -11,14 +12,19 @@ from app.schemas.auth import (
     ChangePasswordRequest,
     AuthUser,
     ForgotPasswordRequest,
+    GoogleSignInRequest,
     LoginRequest,
     MeResponse,
+    OAuthConfigResponse,
+    OAuthUrlResponse,
     RefreshRequest,
     RegisterRequest,
     RegisterResponse,
+    SocialSignInResponse,
     TokenResponse,
 )
 from app.schemas.user_profiles import UserProfileRead
+from app.services import social_auth
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -121,6 +127,157 @@ def refresh(payload: RefreshRequest) -> TokenResponse:
             detail="Invalid refresh token",
         )
     return token
+
+
+# ============================================================
+# Social sign-in
+# ============================================================
+#
+# Google and Facebook arrive by different routes - see
+# app/services/social_auth.py for why - but both end in the same place: a
+# Supabase session, and a `user_profiles` row that exists whether or not this
+# is the user's first time.
+
+
+@router.get("/oauth/config", response_model=OAuthConfigResponse)
+def oauth_config() -> OAuthConfigResponse:
+    """What the app is allowed to offer.
+
+    Unauthenticated on purpose: it is asked on the login screen, before there
+    is anybody to authenticate, and it reveals nothing a client could not
+    learn by pressing the buttons.
+    """
+    return OAuthConfigResponse(
+        google=settings.can_use_google_oauth,
+        facebook=settings.facebook_oauth_enabled,
+        google_client_id=settings.google_oauth_client_id,
+    )
+
+
+@router.post("/oauth/google", response_model=SocialSignInResponse)
+def sign_in_with_google(
+    payload: GoogleSignInRequest, db: DbSession
+) -> SocialSignInResponse:
+    """Exchange Android's Google ID token for a Supabase session.
+
+    The token is not decoded here. Supabase verifies its signature, issuer and
+    audience against the Google provider configured on the project, which is
+    the check that matters - a token this server merely parsed would prove
+    nothing.
+    """
+    if not settings.can_use_google_oauth:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Google sign-in is not configured on this server",
+        )
+
+    credentials: dict[str, str] = {
+        "provider": "google",
+        "token": payload.id_token,
+    }
+    if payload.nonce:
+        credentials["nonce"] = payload.nonce
+
+    try:
+        result = get_supabase().auth.sign_in_with_id_token(credentials)
+    except (AuthApiError, AuthError) as exc:
+        # 401, not 400: the credential offered was rejected, which is an
+        # authentication answer - the same shape /login gives.
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=getattr(exc, "message", "Google sign-in was rejected"),
+        ) from exc
+
+    return _social_response(db, result)
+
+
+@router.get("/oauth/{provider}/url", response_model=OAuthUrlResponse)
+def oauth_url(provider: str) -> OAuthUrlResponse:
+    """Where to point the browser for a provider that needs one.
+
+    The app asks rather than building this itself, so the Supabase project URL
+    stays server-side and the redirect target is fixed by configuration
+    instead of by whoever is holding the phone.
+    """
+    if provider not in social_auth.BROWSER_PROVIDERS:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Unknown sign-in provider",
+        )
+    if provider == "facebook" and not settings.facebook_oauth_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Facebook sign-in is not configured on this server",
+        )
+
+    return OAuthUrlResponse(
+        url=social_auth.authorize_url(provider, settings.oauth_redirect_url)
+    )
+
+
+@router.post("/oauth/complete", response_model=MeResponse)
+def complete_oauth_sign_in(
+    credentials: BearerCredentialsDep, db: DbSession
+) -> MeResponse:
+    """Finish a browser sign-in: make sure the profile row exists.
+
+    The browser flow hands the session straight to the app, so no request ever
+    passed through this server while the account was being created. Without
+    this call a Facebook user would reach the app with a Supabase account and
+    no profile - nameless on every screen that reads one.
+
+    Takes the new session as its bearer token, so the account it creates a
+    profile for is the one Supabase just authenticated, never one named in a
+    request body.
+    """
+    try:
+        response = get_supabase().auth.get_user(credentials.credentials)
+    except (AuthApiError, AuthError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+
+    if response is None or response.user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    user = response.user
+    profile = social_auth.ensure_profile(db, user)
+
+    return MeResponse(
+        user=AuthUser(
+            id=profile.user_id, email=user.email, created_at=user.created_at
+        ),
+        profile=UserProfileRead.model_validate(profile),
+        role=profile.role,
+    )
+
+
+def _social_response(db: DbSession, result) -> SocialSignInResponse:
+    """The common tail of a social sign-in this server performed itself."""
+    token = _to_token_response(result.session)
+    if result.user is None or token is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="The provider did not return a session",
+        )
+
+    profile = social_auth.ensure_profile(db, result.user)
+
+    return SocialSignInResponse(
+        user=AuthUser(
+            id=profile.user_id,
+            email=result.user.email,
+            created_at=result.user.created_at,
+        ),
+        profile=UserProfileRead.model_validate(profile),
+        session=token,
+    )
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)

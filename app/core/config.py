@@ -64,9 +64,43 @@ class Settings(BaseSettings):
     # doubles in January 2027.
     gemini_model: str = "gemini-3.1-flash-lite"
 
+    # Signing in with Google, the native way.
+    #
+    # This is the **Web** OAuth client ID from Google Cloud, not the Android
+    # one. Android's account picker signs its ID token for whichever client is
+    # named as the audience, and Supabase only accepts a token whose audience
+    # is a client ID configured on its Google provider - so both ends have to
+    # name this same one. The app is told it by GET /auth/oauth/config rather
+    # than compiling it in, so changing the Google project does not mean
+    # shipping a new APK.
+    #
+    # Not a secret: a client ID travels in every OAuth request. The client
+    # *secret* lives in the Supabase dashboard and never comes near this app.
+    #
+    # Optional. Left blank, the config endpoint reports Google as unavailable
+    # and the app hides the button rather than offering one that cannot work.
+    google_oauth_client_id: str | None = None
+
+    # Where Supabase sends the browser back to after a social sign-in.
+    #
+    # A custom scheme, because the destination is an app and not a web page.
+    # It has to be on the project's redirect allowlist in the Supabase
+    # dashboard, or the handshake ends on an error page instead of in the app.
+    oauth_redirect_url: str = "bodify://auth"
+
+    # Whether Facebook's button is offered. There is nothing for this server
+    # to hold - the app id and secret live in the Supabase dashboard - so this
+    # is simply "has that been set up yet", and it exists so the app can hide
+    # a button that would otherwise open a browser onto a Supabase error.
+    facebook_oauth_enabled: bool = False
+
     @property
     def can_use_ai_coach(self) -> bool:
         return bool(self.gemini_api_key)
+
+    @property
+    def can_use_google_oauth(self) -> bool:
+        return bool(self.google_oauth_client_id)
 
     @property
     def can_write_storage(self) -> bool:

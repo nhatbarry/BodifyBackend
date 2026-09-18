@@ -20,6 +20,7 @@ from collections.abc import Callable, Iterator
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
+from sqlalchemy.orm import Session
 
 from app.db.session import SessionLocal
 from app.main import app
@@ -141,6 +142,19 @@ def credentials(client: TestClient) -> Callable[[], dict[str, str]]:
         }
 
     return make
+
+
+@pytest.fixture
+def db_session() -> Iterator[Session]:
+    """A direct database session, for the few rules that are not reachable
+    through a request.
+
+    Social sign-in is one: the account is created by Supabase during the
+    provider handshake, so the profile-row logic has no HTTP endpoint that
+    creates it from scratch. Tests using this clean up the rows they make.
+    """
+    with SessionLocal() as db:
+        yield db
 
 
 @pytest.fixture
