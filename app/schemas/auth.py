@@ -60,6 +60,51 @@ class MeResponse(BaseModel):
     role: UserRole
 
 
+class OAuthConfigResponse(BaseModel):
+    """Which social sign-ins this server can actually complete.
+
+    The app asks before drawing the buttons. A provider that has not been set
+    up produces a failure the user can do nothing about, and the app already
+    treats "a tap that always fails is worse than no button" as the rule -
+    same as the rest-day checkbox that greys out when the API would 409.
+    """
+
+    google: bool
+    facebook: bool
+    # The audience the app must ask Android to sign its ID token for. Null
+    # whenever `google` is false.
+    google_client_id: str | None = None
+
+
+class GoogleSignInRequest(BaseModel):
+    """The ID token Android's account picker produced."""
+
+    id_token: str = Field(min_length=1)
+    # Passed through to Supabase when the app generated one. It ties the token
+    # to this particular sign-in attempt, so a token lifted from another one
+    # cannot be replayed here.
+    nonce: str | None = None
+
+
+class OAuthUrlResponse(BaseModel):
+    """Where to send the browser for a provider that needs one."""
+
+    url: str
+
+
+class SocialSignInResponse(BaseModel):
+    """Signed in through a provider: who it is, and the session to use.
+
+    Same three parts as registering, because that is what the client needs in
+    both cases - and unlike registering, the session is never null: a social
+    sign-in that produced no session is a failure, not a pending confirmation.
+    """
+
+    user: AuthUser
+    profile: UserProfileRead
+    session: TokenResponse
+
+
 class ChangePasswordRequest(BaseModel):
     """Changing a password proves you know the old one first.
 
