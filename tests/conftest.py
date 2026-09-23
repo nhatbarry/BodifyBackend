@@ -57,6 +57,11 @@ def _purge_test_accounts() -> int:
             return 0
 
         for statement in (
+            # meals cascades to meal_items; both carry a real FK to auth.users,
+            # but the deletes stay explicit like the rest of this list so a
+            # change to that FK cannot quietly start leaving diary rows behind.
+            "DELETE FROM meals WHERE user_id = ANY(:ids)",
+            "DELETE FROM nutrition_targets WHERE user_id = ANY(:ids)",
             "DELETE FROM workout_sessions WHERE user_id = ANY(:ids)",
             "DELETE FROM workout_plans WHERE user_id = ANY(:ids)",
             "DELETE FROM body_metrics WHERE user_id = ANY(:ids)",
