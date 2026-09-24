@@ -88,3 +88,9 @@ migrate/dump.err
 
 # Reference archives dropped in for research, not part of the project.
 *.zip
+
+# ============================================================
+# Crawled datasets and one-off scripts
+# ============================================================
+data/
+scripts/

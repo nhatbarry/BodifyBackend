@@ -5,7 +5,10 @@ from app.models.exercise_media import ExerciseMedia
 from app.models.exercise_muscles import ExerciseMuscle
 from app.models.exercise_translations import ExerciseTranslation
 from app.models.exercises import Exercise
+from app.models.foods import Food, FoodCategory, FoodComponent, FoodTranslation
+from app.models.meals import Meal, MealItem
 from app.models.muscle_groups import MuscleGroup
+from app.models.nutrition_targets import NutritionTarget
 from app.models.schedules import Schedule
 from app.models.session_exercises import SessionExercise
 from app.models.session_sets import SessionSet
@@ -26,7 +29,14 @@ __all__ = [
     "ExerciseMedia",
     "ExerciseMuscle",
     "ExerciseTranslation",
+    "Food",
+    "FoodCategory",
+    "FoodComponent",
+    "FoodTranslation",
+    "Meal",
+    "MealItem",
     "MuscleGroup",
+    "NutritionTarget",
     "Schedule",
     "SessionExercise",
     "SessionSet",

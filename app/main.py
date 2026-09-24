@@ -6,8 +6,11 @@ from app.api.endpoints import (
     body_metrics,
     equipment,
     exercises,
+    foods,
     health,
+    meals,
     muscle_groups,
+    nutrition,
     profile,
     schedules,
     session_sets,
@@ -55,6 +58,13 @@ app.include_router(progress.router, prefix=API_V1_PREFIX)
 # the key lives in this server's environment and the conversation history is
 # read from the database rather than taken from the request.
 app.include_router(ai_coach.router, prefix=API_V1_PREFIX)
+
+# Phase 7: the food catalog and the diary logged against it. meals owns
+# both /meal-items and /meals, and nutrition owns /nutrition-targets and
+# /nutrition/summary, so neither carries a router prefix.
+app.include_router(foods.router, prefix=API_V1_PREFIX)
+app.include_router(meals.router, prefix=API_V1_PREFIX)
+app.include_router(nutrition.router, prefix=API_V1_PREFIX)
 
 
 @app.get("/")
