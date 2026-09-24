@@ -6,12 +6,13 @@ from typing import Annotated
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from supabase_auth.errors import AuthApiError, AuthError
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from app.core.supabase_client import get_supabase
+from app.core.jwt_verify import KeysUnavailable, TokenInvalid, verify
 from app.db.session import SessionLocal
 from app.models.user_profiles import UserProfile
+from app.models.users import AuthSession, User
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -58,11 +59,18 @@ def get_current_user(
 ) -> CurrentUser:
     """Resolve the caller from their Supabase access token.
 
-    The token is validated by Supabase itself (GoTrue /user), so this works
-    regardless of which signing algorithm the project uses. Cost is one
-    network call per request; swap for local JWKS verification if that
-    latency ever matters.
+    The signature is checked here against the project's published key rather
+    than by calling GoTrue, which took one network round trip per request.
+    What a signature cannot tell is whether the session has since ended, so
+    the same single query that loads the profile also requires the session
+    row to still exist: logging out, changing the password or deleting the
+    account refuses the token immediately, exactly as GoTrue did.
     """
+    unauthorized = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid or expired token",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
     if credentials is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -71,30 +79,35 @@ def get_current_user(
         )
 
     try:
-        response = get_supabase().auth.get_user(credentials.credentials)
-    except (AuthApiError, AuthError) as exc:
+        claims = verify(credentials.credentials)
+    except TokenInvalid as exc:
+        raise unauthorized from exc
+    except KeysUnavailable as exc:
+        # Not the caller's fault, and not a verdict on their token.
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired token",
-            headers={"WWW-Authenticate": "Bearer"},
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Cannot verify sign-in right now. Please try again.",
         ) from exc
 
-    if response is None or response.user is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired token",
-            headers={"WWW-Authenticate": "Bearer"},
+    row = db.execute(
+        select(User.email, User.created_at, UserProfile)
+        .select_from(AuthSession)
+        .join(User, User.id == AuthSession.user_id)
+        .outerjoin(UserProfile, UserProfile.user_id == User.id)
+        .where(
+            AuthSession.id == claims.session_id,
+            AuthSession.user_id == claims.user_id,
+            or_(AuthSession.not_after.is_(None), AuthSession.not_after > func.now()),
         )
+    ).first()
+    if row is None:
+        raise unauthorized
 
-    user = response.user
-    user_id = uuid.UUID(str(user.id))
-
-    profile = db.query(UserProfile).filter(UserProfile.user_id == user_id).first()
-
+    email, created_at, profile = row
     return CurrentUser(
-        id=user_id,
-        email=user.email,
-        created_at=user.created_at,
+        id=claims.user_id,
+        email=email,
+        created_at=created_at,
         profile=profile,
         # A user without a profile row yet is still just a regular user.
         role=profile.role if profile else "user",

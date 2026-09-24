@@ -40,6 +40,57 @@ def test_logout_revokes_the_session_not_just_the_local_copy(client: TestClient):
     assert refreshed.status_code >= 400, "refresh token still works after logout"
 
 
+def test_the_access_token_itself_stops_working_at_logout(client: TestClient):
+    """Tokens are verified locally now, and a signature alone would stay valid
+    until it expired an hour later. The session check is what keeps logout
+    immediate - this pins it."""
+    _, tokens = _register(client)
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+
+    assert client.get(f"{API}/auth/me", headers=headers).status_code == 200
+    client.post(f"{API}/auth/logout", headers=headers)
+    assert client.get(f"{API}/auth/me", headers=headers).status_code == 401
+
+
+def test_changing_the_password_ends_the_current_session(
+    client: TestClient, credentials
+):
+    """Ending access elsewhere is usually the point of changing a password, so
+    a token issued before the change must not outlive it."""
+    created = credentials()
+    headers = created["headers"]
+
+    client.put(
+        f"{API}/auth/password",
+        headers=headers,
+        json={"current_password": created["password"], "new_password": "Changed789"},
+    )
+    assert client.get(f"{API}/auth/me", headers=headers).status_code == 401
+
+
+def test_a_token_this_project_did_not_sign_is_refused(client: TestClient):
+    import jwt as pyjwt
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    _, tokens = _register(client)
+    real = pyjwt.decode(tokens["access_token"], options={"verify_signature": False})
+    header = pyjwt.get_unverified_header(tokens["access_token"])
+
+    # Same claims, same key id, signed with somebody else's key.
+    forged = pyjwt.encode(
+        real, ec.generate_private_key(ec.SECP256R1()), algorithm="ES256",
+        headers={"kid": header["kid"]},
+    )
+    # And the classic trick of declaring no signature at all.
+    unsigned = pyjwt.encode(real, None, algorithm="none", headers={"kid": header["kid"]})
+
+    for token in (forged, unsigned, "not-a-jwt"):
+        response = client.get(
+            f"{API}/auth/me", headers={"Authorization": f"Bearer {token}"}
+        )
+        assert response.status_code == 401, token[:20]
+
+
 def test_logout_is_idempotent_and_needs_a_token(client: TestClient):
     _, tokens = _register(client)
     headers = {"Authorization": f"Bearer {tokens['access_token']}"}

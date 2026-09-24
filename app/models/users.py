@@ -43,3 +43,21 @@ class User(Base):
         primaryjoin="User.id == foreign(BodyMetric.user_id)",
         viewonly=True,
     )
+
+
+class AuthSession(Base):
+    """Read-only mapping to Supabase Auth's auth.sessions.
+
+    Same rule as `User`: GoTrue owns the table, this only reads it. A row
+    exists while a sign-in is alive; logging out, changing the password and
+    deleting the account all remove it. Checking it is what lets a locally
+    verified token still be refused the moment its session ends.
+    """
+
+    __tablename__ = "sessions"
+    __table_args__ = {"schema": "auth"}
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
+    # Set only for time-boxed sessions; NULL means no hard end.
+    not_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
