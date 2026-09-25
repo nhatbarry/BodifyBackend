@@ -15,7 +15,7 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 
 from app.api.dependencies import CurrentUserDep, DbSession
-from app.models.meals import Meal, MealItem
+from app.models.meals import STATUS_EATEN, Meal, MealItem
 from app.models.nutrition_targets import NutritionTarget
 from app.schemas.meals import DaySummary, NutritionTargetRead, NutritionTargetUpsert
 
@@ -88,6 +88,10 @@ def daily_summary(
     them up in Python - a month of diary is hundreds of rows the client has no
     other use for. Days with nothing logged are absent rather than zero: a day
     the user did not track is not a day they ate nothing.
+
+    Counts what was **eaten**. A planned meal is a plan, not a record, so a
+    week of future planning leaves the history strip empty rather than full of
+    meals that have not happened.
     """
     if date_to < date_from:
         raise HTTPException(
@@ -116,6 +120,7 @@ def daily_summary(
             Meal.user_id == current_user.id,
             Meal.logged_date >= date_from,
             Meal.logged_date <= date_to,
+            MealItem.status == STATUS_EATEN,
         )
         .group_by(Meal.logged_date)
         .order_by(Meal.logged_date)
