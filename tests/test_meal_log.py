@@ -2,8 +2,8 @@
 
 Every test here pins a decision that was argued, not a coincidence of the
 current code: why a per-100 g row refuses to be logged in servings, why
-correcting the catalog must not move yesterday's total, why two foods added to
-lunch land in one lunch.
+correcting the catalog must not move yesterday's total, why a planned food
+does not count toward today's total.
 
 Foods are looked up from the real catalog rather than hardcoded by id. The
 seed is regenerated from viendinhduong.vn and the ids move; a test that fails
@@ -69,18 +69,48 @@ def catalog():
     }
 
 
-def _log(client, headers, food_id, quantity, unit, meal_type="lunch", day=TODAY):
+def _meal(client, headers, day=TODAY, name=None):
+    """Create a meal and return its id."""
+    response = client.post(
+        f"{API}/meals",
+        headers=headers,
+        json={"logged_date": day.isoformat(), "name": name},
+    )
+    assert response.status_code == 201, response.text
+    return response.json()["meal_id"]
+
+
+def _log(
+    client,
+    headers,
+    food_id,
+    quantity,
+    unit,
+    meal_id=None,
+    day=TODAY,
+    status="eaten",
+):
+    """Log (or plan) a food. A meal is created on `day` unless one is given -
+    most tests care about the food, not about which meal it sits in."""
+    if meal_id is None:
+        meal_id = _meal(client, headers, day)
     return client.post(
         f"{API}/meal-items",
         headers=headers,
         json={
-            "logged_date": day.isoformat(),
-            "meal_type": meal_type,
+            "meal_id": meal_id,
             "food_id": food_id,
             "quantity": str(quantity),
             "unit": unit,
+            "status": status,
         },
     )
+
+
+def _day(client, headers, day=TODAY):
+    return client.get(
+        f"{API}/meals", headers=headers, params={"date": day.isoformat()}
+    ).json()
 
 
 # --------------------------------------------------------------------------
@@ -190,30 +220,25 @@ def test_correcting_the_catalog_does_not_rewrite_what_was_logged(
 # --------------------------------------------------------------------------
 
 
-def test_two_foods_in_one_sitting_land_in_one_meal(client, owner, catalog):
-    """There is exactly one lunch on a day. Adding a second food appends to it
-    rather than creating a rival lunch the screen would render twice."""
-    _log(client, owner, catalog["dish"]["id"], "1", "serving")
-    _log(client, owner, catalog["ingredient"]["id"], "100", "gram")
+def test_foods_added_to_one_meal_share_it(client, owner, catalog):
+    """A meal is a container the user made; adding a second food to it appends
+    an item rather than creating another meal."""
+    meal_id = _meal(client, owner, name="Bữa trưa")
+    _log(client, owner, catalog["dish"]["id"], "1", "serving", meal_id=meal_id)
+    _log(client, owner, catalog["ingredient"]["id"], "100", "gram", meal_id=meal_id)
 
-    day = client.get(
-        f"{API}/meals", headers=owner, params={"date": TODAY.isoformat()}
-    ).json()
-
-    lunches = [m for m in day["meals"] if m["meal_type"] == "lunch"]
-    assert len(lunches) == 1
-    assert len(lunches[0]["items"]) == 2
+    meals = _day(client, owner)["meals"]
+    assert len(meals) == 1
+    assert len(meals[0]["items"]) == 2
 
 
 def test_a_day_totals_its_items_and_subtracts_the_target(client, owner, catalog):
     client.put(
         f"{API}/nutrition-targets", headers=owner, json={"energy_kcal": "2000"}
     )
-    _log(client, owner, catalog["dish"]["id"], "1", "serving", meal_type="breakfast")
+    _log(client, owner, catalog["dish"]["id"], "1", "serving")
 
-    day = client.get(
-        f"{API}/meals", headers=owner, params={"date": TODAY.isoformat()}
-    ).json()
+    day = _day(client, owner)
 
     eaten = Decimal(day["totals"]["energy_kcal"])
     assert eaten == sum(
@@ -262,43 +287,476 @@ def test_correcting_an_amount_recomputes_the_nutrition(client, owner, catalog):
     )
 
 
-def test_removing_the_last_food_removes_the_empty_sitting(client, owner, catalog):
-    """An empty lunch is not something the user logged; it would render as a
-    heading with nothing under it."""
-    item = _log(client, owner, catalog["dish"]["id"], "1", "serving").json()
+def test_a_meal_survives_losing_its_last_food(client, owner, catalog):
+    """The user created the meal, so an empty one is where the next food goes.
+    (It used to vanish, back when meals were made as a side effect of logging
+    a food.)"""
+    meal_id = _meal(client, owner, name="Bữa sáng")
+    item = _log(
+        client, owner, catalog["dish"]["id"], "1", "serving", meal_id=meal_id
+    ).json()
 
     assert client.delete(
         f"{API}/meal-items/{item['meal_item_id']}", headers=owner
     ).status_code == 204
 
-    day = client.get(
-        f"{API}/meals", headers=owner, params={"date": TODAY.isoformat()}
-    ).json()
-    assert [m for m in day["meals"] if m["meal_type"] == "lunch"] == []
+    kept = [m for m in _day(client, owner)["meals"] if m["meal_id"] == meal_id]
+    assert len(kept) == 1
+    assert kept[0]["items"] == []
+    assert kept[0]["name"] == "Bữa sáng"
 
 
-def test_a_sitting_with_a_note_survives_losing_its_last_food(
-    client, owner, catalog
-):
-    """A note is the user's own writing, not a by-product of the items."""
-    item = _log(client, owner, catalog["dish"]["id"], "1", "serving").json()
-    day = client.get(
-        f"{API}/meals", headers=owner, params={"date": TODAY.isoformat()}
-    ).json()
-    meal_id = day["meals"][0]["meal_id"]
+def test_a_note_can_be_set_and_cleared(client, owner):
+    meal_id = _meal(client, owner)
 
     client.put(
         f"{API}/meals/{meal_id}", headers=owner, json={"note": "ăn ở nhà bà ngoại"}
     )
-    client.delete(f"{API}/meal-items/{item['meal_item_id']}", headers=owner)
+    meal = _day(client, owner)["meals"][0]
+    assert meal["note"] == "ăn ở nhà bà ngoại"
 
-    after = client.get(
-        f"{API}/meals", headers=owner, params={"date": TODAY.isoformat()}
+    client.put(f"{API}/meals/{meal_id}", headers=owner, json={"note": None})
+    assert _day(client, owner)["meals"][0]["note"] is None
+
+
+# --------------------------------------------------------------------------
+# Meals named by the user
+# --------------------------------------------------------------------------
+
+
+def test_a_day_can_hold_more_than_four_meals_in_the_order_they_were_added(
+    client, owner
+):
+    """The four fixed meals were the limit this replaced: somebody who eats
+    five small meals could not have five."""
+    names = ["Sáng", "Phụ sáng", "Trưa", "Xế", "Tối", "Trước ngủ"]
+    for name in names:
+        _meal(client, owner, name=name)
+
+    meals = _day(client, owner)["meals"]
+    assert [m["name"] for m in meals] == names
+    assert [m["position"] for m in meals] == list(range(len(names)))
+
+
+def test_two_meals_may_share_a_name(client, owner):
+    """Nothing makes a name unique - two snacks are two snacks."""
+    _meal(client, owner, name="Ăn vặt")
+    _meal(client, owner, name="Ăn vặt")
+    assert len(_day(client, owner)["meals"]) == 2
+
+
+def test_a_meal_without_a_name_has_none_stored(client, owner):
+    """The "Bữa 1" placeholder is the app's to draw. Storing it would put words
+    in the user's mouth, and would not survive a language change."""
+    meal_id = _meal(client, owner)
+    meal = _day(client, owner)["meals"][0]
+    assert meal["meal_id"] == meal_id
+    assert meal["name"] is None
+
+
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_a_blank_name_is_no_name(client, owner, blank):
+    _meal(client, owner, name=blank)
+    assert _day(client, owner)["meals"][0]["name"] is None
+
+
+def test_a_meal_can_be_renamed_and_the_name_cleared(client, owner):
+    meal_id = _meal(client, owner, name="Bữa 1")
+
+    client.put(f"{API}/meals/{meal_id}", headers=owner, json={"name": "  Sau tập  "})
+    assert _day(client, owner)["meals"][0]["name"] == "Sau tập"
+
+    # Omitting the name keeps it; sending null clears it back to the placeholder.
+    client.put(f"{API}/meals/{meal_id}", headers=owner, json={"note": "x"})
+    assert _day(client, owner)["meals"][0]["name"] == "Sau tập"
+
+    client.put(f"{API}/meals/{meal_id}", headers=owner, json={"name": None})
+    assert _day(client, owner)["meals"][0]["name"] is None
+
+
+def test_a_name_too_long_is_rejected(client, owner):
+    response = client.post(
+        f"{API}/meals",
+        headers=owner,
+        json={"logged_date": TODAY.isoformat(), "name": "x" * 61},
+    )
+    assert response.status_code == 422
+
+
+# --------------------------------------------------------------------------
+# Planned and eaten
+# --------------------------------------------------------------------------
+
+
+def test_a_planned_food_is_not_counted_as_eaten(client, owner, catalog):
+    """Totals and the target comparison are about what happened. Counting a
+    plan would tell somebody they had already hit their target at breakfast."""
+    client.put(
+        f"{API}/nutrition-targets", headers=owner, json={"energy_kcal": "2000"}
+    )
+    item = _log(
+        client, owner, catalog["dish"]["id"], "1", "serving", status="planned"
     ).json()
-    kept = [m for m in after["meals"] if m["meal_id"] == meal_id]
-    assert len(kept) == 1
-    assert kept[0]["note"] == "ăn ở nhà bà ngoại"
-    assert kept[0]["items"] == []
+
+    day = _day(client, owner)
+    assert Decimal(day["totals"]["energy_kcal"]) == 0
+    assert Decimal(day["remaining_kcal"]) == Decimal("2000")
+    # ...but the plan has a number of its own.
+    assert Decimal(day["planned_kcal"]) == Decimal(item["energy_kcal"])
+    assert item["status"] == "planned"
+
+
+def test_a_future_day_can_be_planned_and_read_back(client, owner, catalog):
+    later = TODAY + timedelta(days=30)
+    _log(
+        client, owner, catalog["dish"]["id"], "2", "serving", day=later,
+        status="planned",
+    )
+
+    day = _day(client, owner, later)
+    assert len(day["meals"]) == 1
+    assert day["meals"][0]["items"][0]["status"] == "planned"
+    assert Decimal(day["planned_kcal"]) > 0
+
+
+def test_ticking_a_planned_food_counts_it_as_eaten(client, owner, catalog):
+    item = _log(
+        client, owner, catalog["dish"]["id"], "1", "serving", status="planned"
+    ).json()
+
+    ticked = client.put(
+        f"{API}/meal-items/{item['meal_item_id']}/status",
+        headers=owner,
+        json={"status": "eaten"},
+    )
+    assert ticked.status_code == 200, ticked.text
+    assert ticked.json()["status"] == "eaten"
+
+    day = _day(client, owner)
+    assert Decimal(day["totals"]["energy_kcal"]) == Decimal(item["energy_kcal"])
+
+
+def test_ticking_with_a_different_amount_keeps_the_plan_on_record(
+    client, owner, catalog
+):
+    """"Planned 2 bowls, ate 1" has to stay answerable - which is why the plan
+    is kept beside the actual instead of being overwritten by it."""
+    item = _log(
+        client, owner, catalog["dish"]["id"], "2", "serving", status="planned"
+    ).json()
+    planned_kcal = Decimal(item["energy_kcal"])
+
+    ticked = client.put(
+        f"{API}/meal-items/{item['meal_item_id']}/status",
+        headers=owner,
+        json={"status": "eaten", "quantity": "1", "unit": "serving"},
+    ).json()
+
+    assert Decimal(ticked["quantity"]) == 1
+    assert Decimal(ticked["energy_kcal"]) < planned_kcal
+    assert Decimal(ticked["planned_quantity"]) == 2
+    assert Decimal(ticked["planned_energy_kcal"]) == planned_kcal
+
+    day = _day(client, owner)
+    assert Decimal(day["totals"]["energy_kcal"]) == Decimal(ticked["energy_kcal"])
+    assert Decimal(day["planned_kcal"]) == planned_kcal
+
+
+def test_putting_an_eaten_food_back_restores_the_planned_amount(
+    client, owner, catalog
+):
+    """An accidental tap should be undoable without retyping anything."""
+    item = _log(
+        client, owner, catalog["dish"]["id"], "2", "serving", status="planned"
+    ).json()
+    url = f"{API}/meal-items/{item['meal_item_id']}/status"
+    client.put(
+        url, headers=owner,
+        json={"status": "eaten", "quantity": "1", "unit": "serving"},
+    )
+
+    back = client.put(url, headers=owner, json={"status": "planned"}).json()
+    assert back["status"] == "planned"
+    assert Decimal(back["quantity"]) == 2
+    assert Decimal(back["energy_kcal"]) == Decimal(item["energy_kcal"])
+    assert Decimal(_day(client, owner)["totals"]["energy_kcal"]) == 0
+
+
+def test_something_never_planned_cannot_be_put_back(client, owner, catalog):
+    item = _log(client, owner, catalog["dish"]["id"], "1", "serving").json()
+    assert item["planned_quantity"] is None
+
+    response = client.put(
+        f"{API}/meal-items/{item['meal_item_id']}/status",
+        headers=owner,
+        json={"status": "planned"},
+    )
+    assert response.status_code == 409
+
+
+def test_ticking_twice_changes_nothing(client, owner, catalog):
+    """A double tap must not be a failure, and must not move any figure."""
+    item = _log(
+        client, owner, catalog["dish"]["id"], "1", "serving", status="planned"
+    ).json()
+    url = f"{API}/meal-items/{item['meal_item_id']}/status"
+
+    first = client.put(url, headers=owner, json={"status": "eaten"}).json()
+    second = client.put(url, headers=owner, json={"status": "eaten"})
+    assert second.status_code == 200
+    assert second.json()["energy_kcal"] == first["energy_kcal"]
+
+
+def test_a_quantity_without_a_unit_is_rejected(client, owner, catalog):
+    item = _log(
+        client, owner, catalog["dish"]["id"], "1", "serving", status="planned"
+    ).json()
+    response = client.put(
+        f"{API}/meal-items/{item['meal_item_id']}/status",
+        headers=owner,
+        json={"status": "eaten", "quantity": "1"},
+    )
+    assert response.status_code == 422
+
+
+def test_editing_a_planned_food_revises_the_plan(client, owner, catalog):
+    item = _log(
+        client, owner, catalog["dish"]["id"], "1", "serving", status="planned"
+    ).json()
+
+    edited = client.put(
+        f"{API}/meal-items/{item['meal_item_id']}",
+        headers=owner,
+        json={"quantity": "3", "unit": "serving"},
+    ).json()
+
+    assert Decimal(edited["quantity"]) == 3
+    assert Decimal(edited["planned_quantity"]) == 3
+    assert Decimal(edited["planned_energy_kcal"]) == Decimal(edited["energy_kcal"])
+
+
+def test_editing_an_eaten_food_leaves_the_plan_alone(client, owner, catalog):
+    """Correcting what was eaten is not revising what was planned."""
+    item = _log(
+        client, owner, catalog["dish"]["id"], "2", "serving", status="planned"
+    ).json()
+    client.put(
+        f"{API}/meal-items/{item['meal_item_id']}/status",
+        headers=owner,
+        json={"status": "eaten"},
+    )
+
+    edited = client.put(
+        f"{API}/meal-items/{item['meal_item_id']}",
+        headers=owner,
+        json={"quantity": "1", "unit": "serving"},
+    ).json()
+
+    assert Decimal(edited["quantity"]) == 1
+    assert Decimal(edited["planned_quantity"]) == 2
+
+
+def test_the_history_counts_only_what_was_eaten(client, owner, catalog):
+    """A week of planning must not fill the history with meals that have not
+    happened yet."""
+    _log(client, owner, catalog["dish"]["id"], "1", "serving", status="planned")
+
+    rows = client.get(
+        f"{API}/nutrition/summary",
+        headers=owner,
+        params={"from": TODAY.isoformat(), "to": TODAY.isoformat()},
+    ).json()
+    assert rows == []
+
+
+# --------------------------------------------------------------------------
+# The month calendar
+# --------------------------------------------------------------------------
+
+
+def _calendar(client, headers, start, end):
+    return client.get(
+        f"{API}/meals/calendar",
+        headers=headers,
+        params={"from": start.isoformat(), "to": end.isoformat()},
+    )
+
+
+def test_the_calendar_shows_eaten_and_planned_side_by_side(client, owner, catalog):
+    """Unlike the history, the calendar must show a planned day - which future
+    dates already have meals lined up is the point of opening it."""
+    later = TODAY + timedelta(days=3)
+    eaten = _log(client, owner, catalog["dish"]["id"], "1", "serving").json()
+    planned = _log(
+        client, owner, catalog["dish"]["id"], "2", "serving", day=later,
+        status="planned",
+    ).json()
+
+    days = {d["logged_date"]: d for d in _calendar(client, owner, TODAY, later).json()}
+
+    assert Decimal(days[TODAY.isoformat()]["eaten_kcal"]) == Decimal(eaten["energy_kcal"])
+    assert days[TODAY.isoformat()]["eaten_count"] == 1
+    assert Decimal(days[later.isoformat()]["eaten_kcal"]) == 0
+    assert Decimal(days[later.isoformat()]["planned_kcal"]) == Decimal(
+        planned["planned_energy_kcal"]
+    )
+    assert days[later.isoformat()]["planned_count"] == 1
+    # A date with nothing on it is absent, not zero.
+    assert (TODAY + timedelta(days=1)).isoformat() not in days
+
+
+def test_the_calendar_is_the_callers_own(client, owner, stranger, catalog):
+    _log(client, owner, catalog["dish"]["id"], "1", "serving")
+    assert _calendar(client, stranger, TODAY, TODAY).json() == []
+
+
+@pytest.mark.parametrize(
+    "start,end",
+    [(TODAY, TODAY - timedelta(days=1)), (TODAY, TODAY + timedelta(days=90))],
+)
+def test_the_calendar_refuses_a_backwards_or_huge_range(client, owner, start, end):
+    assert _calendar(client, owner, start, end).status_code == 422
+
+
+# --------------------------------------------------------------------------
+# Typed in by hand
+# --------------------------------------------------------------------------
+
+
+def _custom(client, headers, meal_id=None, **body):
+    if meal_id is None:
+        meal_id = _meal(client, headers)
+    payload = {"meal_id": meal_id, "name": "Bánh mì mẹ làm", "energy_kcal": "350"}
+    payload.update(body)
+    return client.post(f"{API}/meal-items/custom", headers=headers, json=payload)
+
+
+def test_a_food_not_in_the_catalog_can_be_typed_in(client, owner):
+    """Figures are typed per serving and multiplied out, so the row holds what
+    was eaten - the same shape as a catalog entry."""
+    response = _custom(
+        client, owner, quantity="2", protein_g="12", fat_g="10.5"
+    )
+    assert response.status_code == 201, response.text
+    item = response.json()
+
+    assert item["is_custom"] is True
+    assert item["food_id"] is None
+    assert item["unit"] == "serving"
+    assert item["grams"] is None
+    assert Decimal(item["energy_kcal"]) == Decimal("700")
+    assert Decimal(item["protein_g"]) == Decimal("24")
+    assert Decimal(item["fat_g"]) == Decimal("21")
+    # A macro nobody typed stays unknown rather than becoming zero.
+    assert item["carb_g"] is None
+
+    assert Decimal(_day(client, owner)["totals"]["energy_kcal"]) == Decimal("700")
+
+
+def test_a_typed_in_food_counts_toward_the_day_only_once_eaten(client, owner):
+    item = _custom(client, owner, status="planned").json()
+    assert Decimal(_day(client, owner)["totals"]["energy_kcal"]) == 0
+
+    client.put(
+        f"{API}/meal-items/{item['meal_item_id']}/status",
+        headers=owner,
+        json={"status": "eaten"},
+    )
+    assert Decimal(_day(client, owner)["totals"]["energy_kcal"]) == Decimal("350")
+
+
+def test_a_typed_in_food_can_be_rescaled_without_a_catalog_row(client, owner):
+    """Its figures were entered per serving, so changing the amount scales them
+    exactly - unlike a catalog entry whose food was removed, which refuses."""
+    item = _custom(client, owner, protein_g="10").json()
+
+    edited = client.put(
+        f"{API}/meal-items/{item['meal_item_id']}",
+        headers=owner,
+        json={"quantity": "1.5", "unit": "serving"},
+    )
+    assert edited.status_code == 200, edited.text
+    assert Decimal(edited.json()["energy_kcal"]) == Decimal("525")
+    assert Decimal(edited.json()["protein_g"]) == Decimal("15")
+
+
+def test_a_typed_in_food_refuses_grams(client, owner):
+    item = _custom(client, owner).json()
+    response = client.put(
+        f"{API}/meal-items/{item['meal_item_id']}",
+        headers=owner,
+        json={"quantity": "100", "unit": "gram"},
+    )
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize(
+    "body",
+    [{"name": "   "}, {"energy_kcal": "-1"}, {"quantity": "0"}, {"name": "x" * 201}],
+)
+def test_an_impossible_typed_in_food_is_rejected(client, owner, body):
+    assert _custom(client, owner, **body).status_code == 422
+
+
+def test_a_typed_in_food_cannot_go_into_someone_elses_meal(client, owner, stranger):
+    meal_id = _meal(client, owner)
+    assert _custom(client, stranger, meal_id=meal_id).status_code == 404
+
+
+# --------------------------------------------------------------------------
+# Recently eaten
+# --------------------------------------------------------------------------
+
+
+def _recent(client, headers, **params):
+    response = client.get(f"{API}/meal-items/recent", headers=headers, params=params)
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_recent_foods_are_newest_first_and_each_appears_once(client, owner, catalog):
+    """The picker shows these before anything is typed. Somebody who has phở
+    every morning should see it once, at the top, not seven times."""
+    _log(client, owner, catalog["dish"]["id"], "1", "serving")
+    _log(client, owner, catalog["ingredient"]["id"], "150", "gram")
+    _log(client, owner, catalog["dish"]["id"], "2", "serving")
+
+    recent = _recent(client, owner)
+    ids = [r["food"]["food_id"] for r in recent if r["kind"] == "catalog"]
+    assert ids == [catalog["dish"]["id"], catalog["ingredient"]["id"]]
+    # The amount last eaten is the likeliest amount now.
+    assert Decimal(recent[0]["last_quantity"]) == 2
+
+
+def test_recent_foods_include_typed_in_ones_per_serving(client, owner):
+    """Tapping a hand-typed recent fills the form in again, so its figures come
+    back per serving whatever amount was eaten last time."""
+    _custom(client, owner, quantity="2", energy_kcal="300", protein_g="8")
+
+    recent = _recent(client, owner)
+    custom = next(r for r in recent if r["kind"] == "custom")
+    assert custom["custom"]["name"] == "Bánh mì mẹ làm"
+    assert Decimal(custom["custom"]["energy_kcal"]) == Decimal("300")
+    assert Decimal(custom["custom"]["protein_g"]) == Decimal("8")
+    assert Decimal(custom["last_quantity"]) == 2
+
+
+def test_the_same_typed_in_name_is_one_recent_food(client, owner):
+    _custom(client, owner, name="Chè đậu đen")
+    _custom(client, owner, name="  chè đậu đen ")
+    names = [r["custom"]["name"] for r in _recent(client, owner) if r["kind"] == "custom"]
+    assert len(names) == 1
+
+
+def test_recent_foods_are_the_callers_own(client, owner, stranger, catalog):
+    _log(client, owner, catalog["dish"]["id"], "1", "serving")
+    assert _recent(client, stranger) == []
+
+
+def test_recent_foods_respect_the_limit(client, owner):
+    for i in range(5):
+        _custom(client, owner, name=f"Món {i}")
+    assert len(_recent(client, owner, limit=3)) == 3
 
 
 # --------------------------------------------------------------------------
@@ -326,10 +784,33 @@ def test_another_users_item_is_not_found_rather_than_forbidden(
 def test_a_day_shows_only_the_callers_own_meals(client, owner, stranger, catalog):
     _log(client, owner, catalog["dish"]["id"], "1", "serving")
 
-    day = client.get(
-        f"{API}/meals", headers=stranger, params={"date": TODAY.isoformat()}
+    assert _day(client, stranger)["meals"] == []
+
+
+def test_another_users_meal_is_not_found_rather_than_forbidden(
+    client, owner, stranger, catalog
+):
+    meal_id = _meal(client, owner)
+
+    assert client.put(
+        f"{API}/meals/{meal_id}", headers=stranger, json={"name": "mine now"}
+    ).status_code == 404
+    assert client.delete(f"{API}/meals/{meal_id}", headers=stranger).status_code == 404
+    # Nor can food be put into it.
+    assert _log(
+        client, stranger, catalog["dish"]["id"], "1", "serving", meal_id=meal_id
+    ).status_code == 404
+
+
+def test_another_users_item_status_is_not_found(client, owner, stranger, catalog):
+    item = _log(
+        client, owner, catalog["dish"]["id"], "1", "serving", status="planned"
     ).json()
-    assert day["meals"] == []
+    assert client.put(
+        f"{API}/meal-items/{item['meal_item_id']}/status",
+        headers=stranger,
+        json={"status": "eaten"},
+    ).status_code == 404
 
 
 # --------------------------------------------------------------------------
@@ -444,15 +925,70 @@ def test_the_surviving_duplicate_is_the_one_with_data(client, owner):
     assert chosen["serving_grams"] is not None
 
 
-def test_a_dish_and_an_ingredient_of_the_same_name_both_survive(client, owner):
-    """"Phở gà" is both a cooked bowl and a per-100 g row. They are measured
-    differently and logged differently; collapsing them would hide one."""
+def test_a_dish_and_an_ingredient_of_the_same_name_appear_once(client, owner):
+    """"Phở gà" was published both as a cooked bowl and as a per-100 g row.
+    The dish with a serving weight wins: it has a picture, a recipe, and can
+    be logged in servings or in grams, which covers what the ingredient row
+    offered."""
     rows = client.get(
-        f"{API}/foods", headers=owner, params={"search": "pho ga", "limit": 20}
+        f"{API}/foods", headers=owner, params={"search": "pho ga", "limit": 50}
     ).json()["items"]
 
-    bases = {row["basis"] for row in rows if row["name"] == "Phở gà"}
-    assert bases == {"per_serving", "per_100g"}
+    kept = [row for row in rows if row["name"] == "Phở gà"]
+    assert len(kept) == 1
+    assert kept[0]["basis"] == "per_serving"
+    assert kept[0]["serving_grams"] is not None
+
+
+def test_names_differing_only_in_punctuation_or_capitals_appear_once(client, owner):
+    """"Gan lợn luộc" and "Gan lợn, luộc" are the same food."""
+    rows = client.get(
+        f"{API}/foods", headers=owner, params={"search": "gan lon", "limit": 50}
+    ).json()["items"]
+
+    normalised = [
+        row["name"].lower().replace(",", "").replace("  ", " ") for row in rows
+    ]
+    assert normalised.count("gan lợn luộc") == 1
+
+
+def test_the_unfiltered_catalog_has_no_repeated_names(client, owner):
+    """What the picker shows before anything is typed. Paged through in full,
+    no name appears twice."""
+    seen: dict[str, int] = {}
+    page = 1
+    while True:
+        body = client.get(
+            f"{API}/foods", headers=owner, params={"page": page, "limit": 100}
+        ).json()
+        for row in body["items"]:
+            key = " ".join(row["name"].lower().replace(",", " ").replace(".", " ").split())
+            seen[key] = seen.get(key, 0) + 1
+        if page * 100 >= body["total"]:
+            break
+        page += 1
+    assert [name for name, n in seen.items() if n > 1] == []
+
+
+def test_a_hidden_duplicate_is_still_reachable_for_old_diary_entries(
+    client, owner, db_session
+):
+    """Duplicates are hidden, not deleted: an entry logged against one before
+    the clean-up can still open its recipe and be rescaled."""
+    hidden_id = db_session.execute(
+        text("SELECT food_id FROM foods WHERE is_hidden AND basis = 'per_serving' "
+             "AND serving_grams IS NOT NULL ORDER BY food_id LIMIT 1")
+    ).scalar_one()
+
+    assert client.get(f"{API}/foods/{hidden_id}", headers=owner).status_code == 200
+
+    item = _log(client, owner, hidden_id, "1", "serving").json()
+    edited = client.put(
+        f"{API}/meal-items/{item['meal_item_id']}",
+        headers=owner,
+        json={"quantity": "2", "unit": "serving"},
+    )
+    assert edited.status_code == 200
 
 
 def test_search_rows_carry_their_ingredients(client, owner):
@@ -536,16 +1072,17 @@ def test_an_impossible_amount_is_rejected(client, owner, catalog, quantity):
     ).status_code == 422
 
 
-def test_an_unknown_meal_type_is_rejected(client, owner, catalog):
+def test_an_unknown_status_is_rejected(client, owner, catalog):
+    meal_id = _meal(client, owner)
     response = client.post(
         f"{API}/meal-items",
         headers=owner,
         json={
-            "logged_date": TODAY.isoformat(),
-            "meal_type": "brunch",
+            "meal_id": meal_id,
             "food_id": catalog["dish"]["id"],
             "quantity": "1",
             "unit": "serving",
+            "status": "skipped",
         },
     )
     assert response.status_code == 422

@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -114,6 +115,13 @@ class Food(Base):
 
     image_url: Mapped[str | None] = mapped_column(Text)
     image_key: Mapped[str | None] = mapped_column(Text)
+
+    # A duplicate of a more complete row with the same name. Left out of every
+    # catalog listing but still reachable by id, so diary entries logged
+    # against it keep working. Set by sql_script/hide_duplicate_foods.sql.
+    is_hidden: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false"
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

@@ -173,47 +173,12 @@ def list_foods(
     if basis:
         conditions.append(Food.basis == basis)
 
-    # One row per (name, basis). 289 dish names repeat across the catalog -
-    # the Institute surveyed "Phở gà" in three places and "Cháo lòng" in nine -
-    # and a list showing all of them is a wall of rows the user cannot choose
-    # between.
-    #
-    # Deduped on `basis` as well as name because "Phở gà" the cooked bowl and
-    # "Phở gà" the per-100 g ingredient are different things, measured
-    # differently; collapsing them would hide one of them entirely.
-    #
-    # **Which duplicate survives is not arbitrary.** Taking the lowest food_id
-    # outright picked, for "Cháo lòng", the one row of the nine whose label was
-    # never read - no ingredients, no serving weight - which is exactly the row
-    # the user can do least with. So the completest record wins first: one with
-    # a breakdown, then one with a serving weight, and only then the earliest
-    # id as the tie-break.
-    #
-    # Chosen inside a subquery rather than with DISTINCT ON on the main query,
-    # because DISTINCT ON dictates the sort order and the list is sorted by
-    # search relevance, not by name.
-    component_count = (
-        select(func.count())
-        .select_from(FoodComponent)
-        .where(FoodComponent.food_id == Food.food_id)
-        .correlate(Food)
-        .scalar_subquery()
-    )
-    representatives = (
-        select(Food.food_id)
-        .join(names, names.c.food_id == Food.food_id)
-        .where(*conditions)
-        .distinct(func.lower(names.c.name), Food.basis)
-        .order_by(
-            func.lower(names.c.name),
-            Food.basis,
-            (component_count > 0).desc(),
-            Food.serving_grams.is_(None),
-            Food.food_id,
-        )
-        .subquery()
-    )
-    conditions = [*conditions, Food.food_id.in_(select(representatives.c.food_id))]
+    # One row per food name. The Institute surveyed "Cháo lòng" nine times and
+    # published some foods both as a dish and as an ingredient; the duplicates
+    # are flagged in the database (sql_script/hide_duplicate_foods.sql, which
+    # also says how the row kept is chosen) rather than worked out here on
+    # every keystroke.
+    conditions.append(Food.is_hidden.is_(False))
 
     base = (
         select(Food, names.c.name, FoodCategory.name_vi)
