@@ -5,6 +5,7 @@ from app.models.exercise_media import ExerciseMedia
 from app.models.exercise_muscles import ExerciseMuscle
 from app.models.exercise_translations import ExerciseTranslation
 from app.models.exercises import Exercise
+from app.models.health_daily import HealthDaily
 from app.models.foods import Food, FoodCategory, FoodComponent, FoodTranslation
 from app.models.meals import Meal, MealItem
 from app.models.muscle_groups import MuscleGroup

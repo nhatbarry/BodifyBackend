@@ -4,6 +4,9 @@
 .env
 .env.local
 .env.*.local
+# Any other spelling of an env file (.env_sg held the Singapore project's
+# keys and matched none of the lines above).
+.env*
 
 # ============================================================
 # Python
