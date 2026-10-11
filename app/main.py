@@ -8,6 +8,7 @@ from app.api.endpoints import (
     exercises,
     foods,
     health,
+    health_data,
     meals,
     muscle_groups,
     nutrition,
@@ -64,6 +65,7 @@ app.include_router(ai_coach.router, prefix=API_V1_PREFIX)
 # /nutrition/summary, so neither carries a router prefix.
 app.include_router(foods.router, prefix=API_V1_PREFIX)
 app.include_router(meals.router, prefix=API_V1_PREFIX)
+app.include_router(health_data.router, prefix=API_V1_PREFIX)
 app.include_router(nutrition.router, prefix=API_V1_PREFIX)
 
 

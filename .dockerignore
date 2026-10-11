@@ -2,6 +2,7 @@
 # host's own config, not baked in.
 .env
 .env.*
+.env*
 
 venv/
 __pycache__/
