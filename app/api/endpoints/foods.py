@@ -114,6 +114,49 @@ def _component_names(db, food_ids: list[int]) -> dict[int, list[str]]:
     return grouped
 
 
+def search_clauses(names, term: str):
+    """The WHERE and ORDER BY for a name search, as `(condition, ranking)`.
+
+    Shared by the search box and by matching a photographed dish to the
+    catalog, so "Phở" ranks the same way however it was asked for.
+    """
+    needle = f"%{term}%"
+    condition = or_(
+        names.c.name_ascii.ilike(func.unaccent(needle)),
+        func.unaccent(names.c.name).ilike(func.unaccent(needle)),
+    )
+
+    # Alphabetical order alone buries the obvious answer. Unaccented,
+    # "pho" is a substring of "phô mai", "bánh phồng" and "Hải Phòng", and
+    # sorting by name put all of those above "Phở" - the one dish the user
+    # was plainly reaching for.
+    #
+    # So: names that *start* with the term first, then the shortest, then
+    # alphabetical. Short wins because the plain dish is the short name and
+    # its variants are the long ones - "Phở bò" before "Phở bò sốt vang,
+    # bánh quẩy".
+    prefix = func.unaccent(f"{term}%")
+    ranking = [
+        case(
+            (names.c.name_ascii.ilike(prefix), 0),
+            (func.unaccent(names.c.name).ilike(prefix), 0),
+            else_=1,
+        ),
+        func.length(names.c.name),
+        names.c.name,
+    ]
+    return condition, ranking
+
+
+def summary_query(names):
+    """Food, its name and its category - the columns `_to_summary` reads."""
+    return (
+        select(Food, names.c.name, FoodCategory.name_vi)
+        .join(names, names.c.food_id == Food.food_id)
+        .outerjoin(FoodCategory, FoodCategory.food_category_id == Food.food_category_id)
+    )
+
+
 @router.get("", response_model=Page[FoodSummary])
 def list_foods(
     db: DbSession,
@@ -141,34 +184,8 @@ def list_foods(
     conditions = []
     ranking = [names.c.name]
     if search:
-        term = search.strip()
-        needle = f"%{term}%"
-        conditions.append(
-            or_(
-                names.c.name_ascii.ilike(func.unaccent(needle)),
-                func.unaccent(names.c.name).ilike(func.unaccent(needle)),
-            )
-        )
-
-        # Alphabetical order alone buries the obvious answer. Unaccented,
-        # "pho" is a substring of "phô mai", "bánh phồng" and "Hải Phòng", and
-        # sorting by name put all of those above "Phở" - the one dish the user
-        # was plainly reaching for.
-        #
-        # So: names that *start* with the term first, then the shortest, then
-        # alphabetical. Short wins because the plain dish is the short name and
-        # its variants are the long ones - "Phở bò" before "Phở bò sốt vang,
-        # bánh quẩy".
-        prefix = func.unaccent(f"{term}%")
-        ranking = [
-            case(
-                (names.c.name_ascii.ilike(prefix), 0),
-                (func.unaccent(names.c.name).ilike(prefix), 0),
-                else_=1,
-            ),
-            func.length(names.c.name),
-            names.c.name,
-        ]
+        condition, ranking = search_clauses(names, search.strip())
+        conditions.append(condition)
 
     if basis:
         conditions.append(Food.basis == basis)
@@ -180,12 +197,7 @@ def list_foods(
     # every keystroke.
     conditions.append(Food.is_hidden.is_(False))
 
-    base = (
-        select(Food, names.c.name, FoodCategory.name_vi)
-        .join(names, names.c.food_id == Food.food_id)
-        .outerjoin(FoodCategory, FoodCategory.food_category_id == Food.food_category_id)
-        .where(*conditions)
-    )
+    base = summary_query(names).where(*conditions)
 
     total = db.scalar(
         select(func.count())

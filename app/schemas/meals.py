@@ -49,6 +49,8 @@ class MealItemCreate(BaseModel):
     meal_id: int
     food_id: int
     status: ItemStatus = "eaten"
+    # Set when this entry was confirmed from a photo's draft.
+    photo_analysis_id: int | None = None
 
     quantity: Decimal = Field(gt=0, le=MAX_QUANTITY, max_digits=8, decimal_places=2)
     # Which unit is accepted depends on the food's `basis`; the server checks
@@ -67,6 +69,7 @@ class MealItemCustomCreate(BaseModel):
 
     meal_id: int
     status: ItemStatus = "eaten"
+    photo_analysis_id: int | None = None
 
     name: str = Field(min_length=1, max_length=200)
     energy_kcal: Decimal = Field(ge=0, le=Decimal("10000"), max_digits=8, decimal_places=2)
@@ -141,19 +144,25 @@ class MealItemRead(BaseModel):
     planned_unit: str | None
     planned_energy_kcal: Decimal | None
 
+    photo_analysis_id: int | None = None
+
     created_at: datetime
 
 
 class MealUpdate(BaseModel):
-    """The name, note and photo belong to the sitting, not to any food in it.
+    """The name and note belong to the sitting, not to any food in it.
 
     Omitting a field keeps it; sending null clears it (a cleared name goes back
     to the "Bữa N" placeholder).
+
+    The photo is not here. It used to be a `photo_key` the client could set to
+    anything - including another user's key, which this server would then have
+    signed for it. A photo is uploaded through `POST /meals/{id}/photo`, which
+    makes the key itself, the same reason avatars lost their URL field.
     """
 
     name: str | None = Field(default=None, max_length=60)
     note: str | None = Field(default=None, max_length=2000)
-    photo_key: str | None = Field(default=None, max_length=500)
 
     @field_validator("name")
     @classmethod
@@ -180,6 +189,8 @@ class MealRead(BaseModel):
     position: int
     note: str | None
     photo_key: str | None
+    # Signed from `photo_key` on read; the key alone is not fetchable.
+    photo_url: str | None = None
 
     items: list[MealItemRead] = []
     # What was actually eaten. Planned items are not in it.
@@ -283,3 +294,59 @@ class DaySummary(BaseModel):
     carb_g: Decimal
     fiber_g: Decimal
     meal_count: int
+
+
+# --------------------------------------------------------------------------
+# A photo's draft
+# --------------------------------------------------------------------------
+
+
+class PhotoCandidate(BaseModel):
+    """A catalog food that may be what was photographed, with the amount the
+    photo suggests already worked out in the unit that food accepts - so
+    saving it as-is can never meet the basis/unit 422."""
+
+    food: FoodSummary
+    quantity: Decimal
+    unit: Unit
+    grams: Decimal | None = None
+    energy_kcal: Decimal
+    protein_g: Decimal | None = None
+    fat_g: Decimal | None = None
+    carb_g: Decimal | None = None
+    # False when its energy is more than 3x off the model's own estimate -
+    # probably a different dish that happens to share the name's start. Still
+    # offered, never preselected.
+    plausible: bool = True
+
+
+class PhotoEstimate(BaseModel):
+    """The model's own figures, **per serving**, shaped for
+    `POST /meal-items/custom`. A guess, not a measurement: used only when no
+    catalog food fits, and labelled as such on screen."""
+
+    name: str
+    quantity: Decimal
+    energy_kcal: Decimal
+    protein_g: Decimal | None = None
+    fat_g: Decimal | None = None
+    carb_g: Decimal | None = None
+
+
+class DetectedFood(BaseModel):
+    name: str
+    confidence: float
+    estimated_grams: Decimal | None = None
+    # Best first. Empty when nothing in the catalog matched the name.
+    candidates: list[PhotoCandidate] = []
+    estimate: PhotoEstimate
+
+
+class PhotoAnalysisRead(BaseModel):
+    """What the model saw. A draft: nothing has been written to the diary."""
+
+    analysis_id: int
+    # The meal as it now stands, carrying the photo just uploaded.
+    meal: MealRead
+    is_food: bool
+    items: list[DetectedFood]

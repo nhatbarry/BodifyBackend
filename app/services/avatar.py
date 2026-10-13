@@ -16,9 +16,15 @@ from __future__ import annotations
 import io
 import uuid
 
-from PIL import Image, ImageOps, UnidentifiedImageError
+from PIL import Image, ImageOps
 
 from app.core.config import settings
+from app.services.image_upload import (  # noqa: F401 - re-exported
+    ALLOWED_FORMATS,
+    MAX_UPLOAD_BYTES,
+    InvalidImage,
+    decode_upload,
+)
 from app.services.storage import delete_object, presigned_url, put_object
 
 # Rendered at 40-100 pt. 512 px covers that on any screen and survives a
@@ -27,19 +33,6 @@ from app.services.storage import delete_object, presigned_url, put_object
 AVATAR_SIZE = 512
 AVATAR_QUALITY = 82
 AVATAR_CONTENT_TYPE = "image/webp"
-
-# Generous for a photo, small enough that a malicious upload cannot occupy the
-# server for long. Checked against the actual bytes read, never against a
-# Content-Length header the client controls.
-MAX_UPLOAD_BYTES = 8 * 1024 * 1024
-
-# Formats Pillow will open for us. Anything else is refused by name here as
-# well as by the decode attempt below, so the error can say something useful.
-ALLOWED_FORMATS = {"JPEG", "PNG", "WEBP", "HEIF", "HEIC"}
-
-
-class InvalidImage(ValueError):
-    """The upload is not an image we can use."""
 
 
 def avatar_key(user_id: uuid.UUID) -> str:
@@ -78,48 +71,18 @@ def process_upload(raw: bytes) -> bytes:
     * The result is one predictable format and size, so the client can cache
       and lay it out without surprises.
     """
-    if not raw:
-        raise InvalidImage("Empty upload")
-    if len(raw) > MAX_UPLOAD_BYTES:
-        raise InvalidImage(
-            f"Image is larger than {MAX_UPLOAD_BYTES // (1024 * 1024)} MB"
-        )
+    image = decode_upload(raw)
 
-    try:
-        with Image.open(io.BytesIO(raw)) as image:
-            if (image.format or "").upper() not in ALLOWED_FORMATS:
-                raise InvalidImage(f"Unsupported image format: {image.format}")
+    # Centre-crop to a square before resizing. The UI draws avatars in
+    # a circle, so a non-square image would be cropped anyway - doing
+    # it here means the stored file has no wasted pixels.
+    square = ImageOps.fit(
+        image, (AVATAR_SIZE, AVATAR_SIZE), Image.LANCZOS, centering=(0.5, 0.5)
+    )
 
-            # Applies the EXIF rotation, then discards the EXIF with it -
-            # without this a portrait photo would be stored sideways.
-            image = ImageOps.exif_transpose(image)
-
-            # Flatten transparency onto white: a PNG with an alpha channel
-            # would otherwise turn black when saved as webp.
-            if image.mode in ("RGBA", "LA", "P"):
-                image = image.convert("RGBA")
-                flattened = Image.new("RGB", image.size, (255, 255, 255))
-                flattened.paste(image, mask=image.split()[-1])
-                image = flattened
-            else:
-                image = image.convert("RGB")
-
-            # Centre-crop to a square before resizing. The UI draws avatars in
-            # a circle, so a non-square image would be cropped anyway - doing
-            # it here means the stored file has no wasted pixels.
-            square = ImageOps.fit(
-                image, (AVATAR_SIZE, AVATAR_SIZE), Image.LANCZOS, centering=(0.5, 0.5)
-            )
-
-            buffer = io.BytesIO()
-            square.save(buffer, "WEBP", quality=AVATAR_QUALITY, method=6)
-            return buffer.getvalue()
-    except InvalidImage:
-        raise
-    except UnidentifiedImageError as exc:
-        raise InvalidImage("That file is not an image") from exc
-    except Exception as exc:  # noqa: BLE001 - a corrupt image is user error
-        raise InvalidImage("Could not read that image") from exc
+    buffer = io.BytesIO()
+    square.save(buffer, "WEBP", quality=AVATAR_QUALITY, method=6)
+    return buffer.getvalue()
 
 
 def store_avatar(user_id: uuid.UUID, raw: bytes, previous_key: str | None) -> str:

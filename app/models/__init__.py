@@ -7,7 +7,7 @@ from app.models.exercise_translations import ExerciseTranslation
 from app.models.exercises import Exercise
 from app.models.health_daily import HealthDaily
 from app.models.foods import Food, FoodCategory, FoodComponent, FoodTranslation
-from app.models.meals import Meal, MealItem
+from app.models.meals import Meal, MealItem, MealPhotoAnalysis
 from app.models.muscle_groups import MuscleGroup
 from app.models.nutrition_targets import NutritionTarget
 from app.models.schedules import Schedule
@@ -36,6 +36,7 @@ __all__ = [
     "FoodTranslation",
     "Meal",
     "MealItem",
+    "MealPhotoAnalysis",
     "MuscleGroup",
     "NutritionTarget",
     "Schedule",

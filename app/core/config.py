@@ -64,6 +64,20 @@ class Settings(BaseSettings):
     # doubles in January 2027.
     gemini_model: str = "gemini-3.1-flash-lite"
 
+    # Which model looks at meal photos. Blank means the coach's model.
+    #
+    # A setting of its own because the job is different - naming a dish and
+    # judging a portion from pixels is perception, not phrasing - and because
+    # on the free tier each model has its own daily allowance: pointing this at
+    # a second model keeps photo analysis from spending the coach's.
+    gemini_vision_model: str | None = None
+
+    # Photo analyses per user per rolling 24 hours. Low because the key is on
+    # the free tier, whose whole daily allowance is a few dozen requests for
+    # everybody; one user photographing every snack would spend it for all.
+    # Counted from `meal_photo_analyses`, never a counter that is incremented.
+    food_photo_daily_limit: int = 5
+
     # Signing in with Google, the native way.
     #
     # This is the **Web** OAuth client ID from Google Cloud, not the Android
@@ -97,6 +111,10 @@ class Settings(BaseSettings):
     @property
     def can_use_ai_coach(self) -> bool:
         return bool(self.gemini_api_key)
+
+    @property
+    def vision_model(self) -> str:
+        return self.gemini_vision_model or self.gemini_model
 
     @property
     def can_use_google_oauth(self) -> bool:
