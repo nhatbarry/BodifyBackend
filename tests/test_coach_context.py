@@ -27,7 +27,7 @@ def captured(monkeypatch):
     """Records the context block the endpoint built for each question."""
     seen: list[str] = []
 
-    async def fake_reply(history, question, context=None):
+    async def fake_reply(history, question, context=None, tools=None):
         seen.append(context or "")
         return "ok"
 

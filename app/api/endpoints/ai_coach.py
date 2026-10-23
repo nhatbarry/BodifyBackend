@@ -13,9 +13,10 @@ here rather than from the app:
    fails leaves the question in the conversation, so the user can see what
    they asked and try again, rather than watching it vanish.
 
-What the coach is allowed to *know* - training history, body metrics, the
-active plan - is the next slice. Nothing here changes when it lands: it is a
-bigger prompt, built from the same session.
+What the coach can *do* lives in `app/services/coach_tools.py`: look things
+up, suggest exercises, propose a schedule. What it produces besides text is
+stored on the answer as `attachments`, and a proposed schedule reaches the
+plan only through the apply route below - the user's tap, never the model's.
 """
 
 from __future__ import annotations
@@ -35,14 +36,16 @@ from app.schemas.chat import (
     ChatSessionCreate,
     ChatSessionDetail,
     ChatSessionListItem,
+    ScheduleApplyResult,
 )
-from app.services import coach_context
+from app.services import coach_context, coach_tools
 from app.services.exercise_translation import DEFAULT_LANG
 from app.services.gemini import (
     AiCoachQuotaExceeded,
     AiCoachUnavailable,
     generate_reply,
 )
+from app.services.workout_dates import MAX_CONSECUTIVE_REST_DAYS, TooManyRestDays
 
 router = APIRouter(tags=["ai-coach"])
 
@@ -109,9 +112,11 @@ async def _answer(
     db.refresh(session)
 
     history = [
-        (role, text)
-        for role, text in db.execute(
-            select(ChatMessage.role, ChatMessage.content)
+        # An old answer's cards are replayed as a note, so the model knows it
+        # proposed a schedule earlier and whether the user applied it.
+        (role, text + coach_tools.history_note(attachments))
+        for role, text, attachments in db.execute(
+            select(ChatMessage.role, ChatMessage.content, ChatMessage.attachments)
             .where(
                 ChatMessage.chat_session_id == session.chat_session_id,
                 # The question just saved is passed separately, not twice.
@@ -126,9 +131,12 @@ async def _answer(
     # have finished a workout between two questions, and a coach quoting last
     # week's numbers at them is worse than one that is slightly slower.
     context = coach_context.build(db, session.user_id, language)
+    toolbox = coach_tools.CoachToolbox(db, session.user_id, language)
 
     try:
-        reply_text = await generate_reply(history, content, context=context)
+        reply_text = await generate_reply(
+            history, content, context=context, tools=toolbox
+        )
     except AiCoachQuotaExceeded as exc:
         # 429, not 503: the user can act on this one by waiting, and the app
         # should say so rather than report a server fault.
@@ -145,7 +153,10 @@ async def _answer(
     answer = ChatMessage(
         chat_session_id=session.chat_session_id,
         role=ASSISTANT,
-        content=reply_text,
+        # The model may let a card speak for itself; the message still needs
+        # words, both for the bubble and for the CHECK on content.
+        content=reply_text or toolbox.fallback_text(),
+        attachments=toolbox.attachments or None,
     )
     db.add(answer)
     session.updated_at = func.now()
@@ -153,11 +164,12 @@ async def _answer(
     db.refresh(answer)
     db.refresh(session)
 
+    user_read, answer_read = coach_tools.message_reads(db, [question, answer])
     return ChatReply(
         chat_session_id=session.chat_session_id,
         title=session.title,
-        user_message=ChatMessageRead.model_validate(question),
-        assistant_message=ChatMessageRead.model_validate(answer),
+        user_message=user_read,
+        assistant_message=answer_read,
     )
 
 
@@ -223,7 +235,7 @@ def get_chat_session(
         title=session.title,
         created_at=session.created_at,
         updated_at=session.updated_at,
-        messages=[ChatMessageRead.model_validate(m) for m in messages],
+        messages=coach_tools.message_reads(db, list(messages)),
     )
 
 
@@ -302,3 +314,81 @@ def delete_chat_session(
     db.delete(session)
     db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+def _locked_proposal_message(
+    db: Session, chat_message_id: int, user_id: uuid.UUID
+) -> ChatMessage:
+    message = coach_tools.owned_message_for_update(db, chat_message_id, user_id)
+    if message is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Message not found"
+        )
+    return message
+
+
+@router.post(
+    "/ai-coach/messages/{chat_message_id}/schedule/apply",
+    response_model=ScheduleApplyResult,
+)
+def apply_schedule_proposal(
+    chat_message_id: int,
+    current_user: CurrentUserDep,
+    db: DbSession,
+) -> ScheduleApplyResult:
+    """Writes the schedule a coach answer proposed into the plan.
+
+    The only way a proposal reaches the calendar. All dates or none: a rule
+    that refuses one date rolls back the rest, and the proposal stays
+    pending so the user can ask the coach for another.
+
+    Dates already in the past are skipped and reported, not written.
+    Applying twice is a 409 - the message row is locked while it is checked.
+    """
+    message = _locked_proposal_message(db, chat_message_id, current_user.id)
+    try:
+        plan_id = coach_tools.apply_proposal(db, message, current_user.id)
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc)) from None
+    except coach_tools.ProposalConflict as exc:
+        db.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT, detail=str(exc)) from None
+    except TooManyRestDays as too_many:
+        db.rollback()
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            detail=(
+                f"A plan cannot have more than {MAX_CONSECUTIVE_REST_DAYS} "
+                f"rest days in a row (this would make {too_many.run_length})"
+            ),
+        ) from None
+
+    db.commit()
+    db.refresh(message)
+    return ScheduleApplyResult(
+        plan_id=plan_id, message=coach_tools.message_reads(db, [message])[0]
+    )
+
+
+@router.post(
+    "/ai-coach/messages/{chat_message_id}/schedule/dismiss",
+    response_model=ChatMessageRead,
+)
+def dismiss_schedule_proposal(
+    chat_message_id: int,
+    current_user: CurrentUserDep,
+    db: DbSession,
+) -> ChatMessageRead:
+    """Marks a proposal as not wanted, so the card stops offering Apply."""
+    message = _locked_proposal_message(db, chat_message_id, current_user.id)
+    try:
+        coach_tools.dismiss_proposal(message)
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc)) from None
+    except coach_tools.ProposalConflict as exc:
+        db.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT, detail=str(exc)) from None
+
+    db.commit()
+    db.refresh(message)
+    return coach_tools.message_reads(db, [message])[0]

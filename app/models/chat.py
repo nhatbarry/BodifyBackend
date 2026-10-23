@@ -26,7 +26,7 @@ from sqlalchemy import (
     Text,
     func,
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -103,6 +103,10 @@ class ChatMessage(Base):
 
     role: Mapped[str] = mapped_column(String(16), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    # Cards the answer carries besides its text - suggested exercises, a
+    # proposed schedule and whether it was applied. Shaped by
+    # `app/schemas/chat.py` (`Attachment`); NULL on user messages.
+    attachments: Mapped[list | None] = mapped_column(JSONB)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

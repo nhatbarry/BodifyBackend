@@ -12,6 +12,10 @@ request shape, the error handling. The rest of the application says "user" and
 
 from __future__ import annotations
 
+import asyncio
+import time
+from typing import Protocol
+
 import httpx
 
 from app.core.config import settings
@@ -44,6 +48,20 @@ _ENDPOINT = (
 # typing indicator gets an error instead of an indefinite wait.
 _TIMEOUT_SECONDS = 30.0
 
+# Google answers "503 - this model is currently experiencing high demand" in
+# bursts that pass within seconds: measured on 2026-10-22, 3 of 7 calls to
+# gemini-3.1-flash-lite were refused that way and the same request a moment
+# later went through. The coach used to show every one of them to the user as
+# "no reply came back". Server-side faults (5xx) are retried after these
+# pauses; anything the request itself caused (4xx, 429 included) is not.
+_RETRY_STATUSES = frozenset({500, 502, 503, 504})
+_RETRY_DELAYS = (1.0, 2.0)
+
+# No retry starts after this much time has gone. The app gives the coach 60 s
+# in all, and a retry that cannot finish inside that only makes the user wait
+# longer for the same error.
+_RETRY_BUDGET_SECONDS = 20.0
+
 
 class AiCoachUnavailable(RuntimeError):
     """The coach cannot answer right now, with a reason worth showing."""
@@ -64,10 +82,41 @@ def _to_gemini_role(role: str) -> str:
     return "model" if role == ASSISTANT else "user"
 
 
+class Toolbox(Protocol):
+    """What the coach may call, and what happens when it does.
+
+    Declared here so this file stays the only one that knows Gemini's shapes;
+    `app/services/coach_tools.py` is the implementation, and knows nothing
+    about `functionCall` parts.
+    """
+
+    @property
+    def declarations(self) -> list[dict]: ...
+
+    @property
+    def guide(self) -> str: ...
+
+    def call(self, name: str, args: dict) -> dict: ...
+
+
+# How many times one answer may go back to the model with tool results before
+# it has to write its reply. Every round is a separate request against the same
+# daily allowance as a question, so this is a quota decision as much as a
+# latency one: a schedule proposal needs search -> propose -> answer, three.
+MAX_TOOL_ROUNDS = 4
+
+# Once this much time has gone, the next request is the last: tools are
+# switched off and the model has to answer with what it already has. Each call
+# can still take _TIMEOUT_SECONDS on its own; this only stops a fifth one
+# from starting late.
+_TOOL_TIME_BUDGET_SECONDS = 35.0
+
+
 async def generate_reply(
     history: list[tuple[str, str]],
     question: str,
     context: str | None = None,
+    tools: Toolbox | None = None,
 ) -> str:
     """Asks the model, given `(role, content)` pairs oldest first.
 
@@ -79,6 +128,11 @@ async def generate_reply(
     message: it is an operator fact about who is asking, not something the
     user said, and putting it in the transcript invites the model to answer it
     or the user to argue with it.
+
+    With `tools`, the model may ask for any of them; each call is run and its
+    result sent back until the model answers in text. That can return an empty
+    string when the tools themselves were the answer (a proposal card), so the
+    caller decides what to say then - without tools, empty is still an error.
     """
     if not settings.can_use_ai_coach:
         raise AiCoachUnavailable(
@@ -86,8 +140,10 @@ async def generate_reply(
         )
 
     instruction = SYSTEM_PROMPT
+    if tools is not None:
+        instruction = f"{instruction}\n\n{tools.guide}"
     if context:
-        instruction = f"{SYSTEM_PROMPT}\n\n--- DỮ LIỆU NGƯỜI DÙNG ---\n{context}"
+        instruction = f"{instruction}\n\n--- DỮ LIỆU NGƯỜI DÙNG ---\n{context}"
 
     contents = [
         {"role": _to_gemini_role(role), "parts": [{"text": content}]}
@@ -95,7 +151,45 @@ async def generate_reply(
     ]
     contents.append({"role": "user", "parts": [{"text": question}]})
 
-    payload = {
+    started = time.monotonic()
+    used_tools = False
+    for round_number in range(MAX_TOOL_ROUNDS + 1):
+        last = (
+            tools is None
+            or round_number == MAX_TOOL_ROUNDS
+            or time.monotonic() - started > _TOOL_TIME_BUDGET_SECONDS
+        )
+        body = await _generate(
+            _payload(contents, instruction, tools, tools_allowed=not last)
+        )
+
+        calls = _function_calls(body)
+        if tools is None or not calls:
+            return _extract_text(body, allow_empty=used_tools)
+
+        # The model's turn goes back exactly as it came - Gemini 3 attaches a
+        # thought signature to function-call parts, and a request that drops
+        # it is refused.
+        contents.append(body["candidates"][0]["content"])
+        contents.append(
+            {
+                "role": "user",
+                "parts": [_function_response(tools, call) for call in calls],
+            }
+        )
+        used_tools = True
+
+    raise AssertionError("unreachable")  # the last round always returns
+
+
+def _payload(
+    contents: list[dict],
+    instruction: str,
+    tools: Toolbox | None,
+    *,
+    tools_allowed: bool,
+) -> dict:
+    payload: dict = {
         "contents": contents,
         "systemInstruction": {"parts": [{"text": instruction}]},
         "generationConfig": {
@@ -118,17 +212,24 @@ async def generate_reply(
         },
     }
 
+    if tools is not None:
+        # Declared on every round, the last one included: the transcript by
+        # then holds function calls, and those have to match a declaration.
+        # The last round only switches calling off.
+        payload["tools"] = [{"functionDeclarations": tools.declarations}]
+        payload["toolConfig"] = {
+            "functionCallingConfig": {"mode": "AUTO" if tools_allowed else "NONE"}
+        }
+    return payload
+
+
+async def _generate(payload: dict) -> dict:
+    """One generateContent request, with this file's error mapping."""
     url = _ENDPOINT.format(model=settings.gemini_model)
 
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS) as client:
-            response = await client.post(
-                url,
-                json=payload,
-                # In the header, not the query string: a key in a URL ends up
-                # in logs, proxies and error reports.
-                headers={"x-goog-api-key": settings.gemini_api_key or ""},
-            )
+            response = await _post_with_retry(client, url, payload)
     except httpx.TimeoutException as exc:
         raise AiCoachUnavailable("The coach took too long to answer.") from exc
     except httpx.HTTPError as exc:
@@ -149,16 +250,65 @@ async def generate_reply(
             f"The coach refused the request (HTTP {response.status_code})."
         )
 
-    return _extract_text(response.json())
+    return response.json()
 
 
-def _extract_text(body: dict) -> str:
+def _function_calls(body: dict) -> list[dict]:
+    """The `functionCall` parts of the first candidate, in order."""
+    candidates = body.get("candidates") or []
+    if not candidates:
+        return []
+    parts = ((candidates[0].get("content") or {}).get("parts")) or []
+    return [part["functionCall"] for part in parts if "functionCall" in part]
+
+
+def _function_response(tools: Toolbox, call: dict) -> dict:
+    """Runs one requested tool and wraps its result the way Gemini expects."""
+    result = tools.call(call.get("name", ""), call.get("args") or {})
+    response: dict = {"name": call.get("name", ""), "response": result}
+    if "id" in call:
+        response["id"] = call["id"]
+    return {"functionResponse": response}
+
+
+async def _post_with_retry(
+    client: httpx.AsyncClient, url: str, payload: dict
+) -> httpx.Response:
+    """One generateContent call, repeated while Google says it is overloaded.
+
+    Returns the last response whatever its status, so the caller's error
+    mapping sees exactly what it saw before. A timeout is not retried: it has
+    already spent the whole per-call budget.
+    """
+    started = time.monotonic()
+    for delay in (*_RETRY_DELAYS, None):
+        response = await client.post(
+            url,
+            json=payload,
+            # In the header, not the query string: a key in a URL ends up
+            # in logs, proxies and error reports.
+            headers={"x-goog-api-key": settings.gemini_api_key or ""},
+        )
+        if (
+            response.status_code not in _RETRY_STATUSES
+            or delay is None
+            or time.monotonic() - started + delay > _RETRY_BUDGET_SECONDS
+        ):
+            return response
+        await asyncio.sleep(delay)
+    raise AssertionError("unreachable")  # the loop always returns
+
+
+def _extract_text(body: dict, *, allow_empty: bool = False) -> str:
     """Pulls the reply out of Gemini's response.
 
     Every level here is optional in practice: a prompt blocked by a safety
     filter comes back with no candidate at all, and a response cut off at the
     token limit can have a candidate with no parts. Each of those is a real
     answer to show the user, not an exception to swallow.
+
+    `allow_empty` is for the answer after tools ran: a proposal card can be
+    the whole answer, and the caller has a sentence for it.
     """
     candidates = body.get("candidates") or []
     if not candidates:
@@ -172,6 +322,6 @@ def _extract_text(body: dict) -> str:
     parts = ((candidates[0].get("content") or {}).get("parts")) or []
     text = "".join(part.get("text", "") for part in parts).strip()
 
-    if not text:
+    if not text and not allow_empty:
         raise AiCoachUnavailable("The coach returned an empty answer.")
     return text

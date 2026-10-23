@@ -145,6 +145,74 @@ def list_exercises(
             func.unaccent(translation.c.name).ilike(func.unaccent(f"%{search}%"))
         )
 
+    conditions += catalog_conditions(
+        muscle_group=muscle_group,
+        equipment=equipment,
+        experience_level=experience_level,
+        exercise_type=exercise_type,
+        mechanics=mechanics,
+        force_type=force_type,
+    )
+
+    total = db.scalar(
+        select(func.count())
+        .select_from(Exercise)
+        .join(translation, translation.c.exercise_id == Exercise.exercise_id, isouter=True)
+        .where(*conditions)
+    )
+
+    offset = (page - 1) * limit
+    rows = db.execute(
+        select(Exercise, translation.c.name, translation.c.language)
+        .join(translation, translation.c.exercise_id == Exercise.exercise_id, isouter=True)
+        .where(*conditions)
+        .order_by(Exercise.exercise_id)
+        .limit(limit)
+        .offset(offset)
+    ).all()
+
+    # Pictures in a separate query: joining media here would duplicate rows for
+    # exercises that hold several files.
+    images = list_image_urls(db, [row[0].exercise_id for row in rows])
+
+    items = [
+        ExerciseListItem(
+            exercise_id=exercise.exercise_id,
+            name=name,
+            language=translation_language,
+            icon_url=images.get(exercise.exercise_id, (None, None))[0],
+            thumbnail_url=images.get(exercise.exercise_id, (None, None))[1],
+            exercise_type=exercise.exercise_type,
+            tracking_type=exercise.tracking_type,
+            ai_algorithm=exercise.ai_algorithm,
+            mechanics=exercise.mechanics,
+            force_type=exercise.force_type,
+            experience_level=exercise.experience_level,
+        )
+        for exercise, name, translation_language in rows
+    ]
+
+    return Page[ExerciseListItem](
+        items=items, page=page, limit=limit, total=total or 0
+    )
+
+
+def catalog_conditions(
+    *,
+    muscle_group: str | None = None,
+    equipment: str | None = None,
+    experience_level: str | None = None,
+    exercise_type: str | None = None,
+    mechanics: str | None = None,
+    force_type: str | None = None,
+) -> list:
+    """WHERE conditions for the catalog's exact filters.
+
+    Shared with the AI coach's exercise search, so "Chest" means the same
+    exercises to the coach as it does to the explorer's filter chips.
+    """
+    conditions = []
+
     # These columns hold display text ("Strength", "Beginner"), so match without
     # forcing the caller to know the exact casing.
     for value, column in (
@@ -207,47 +275,7 @@ def list_exercises(
                 )
             )
 
-    total = db.scalar(
-        select(func.count())
-        .select_from(Exercise)
-        .join(translation, translation.c.exercise_id == Exercise.exercise_id, isouter=True)
-        .where(*conditions)
-    )
-
-    offset = (page - 1) * limit
-    rows = db.execute(
-        select(Exercise, translation.c.name, translation.c.language)
-        .join(translation, translation.c.exercise_id == Exercise.exercise_id, isouter=True)
-        .where(*conditions)
-        .order_by(Exercise.exercise_id)
-        .limit(limit)
-        .offset(offset)
-    ).all()
-
-    # Pictures in a separate query: joining media here would duplicate rows for
-    # exercises that hold several files.
-    images = list_image_urls(db, [row[0].exercise_id for row in rows])
-
-    items = [
-        ExerciseListItem(
-            exercise_id=exercise.exercise_id,
-            name=name,
-            language=translation_language,
-            icon_url=images.get(exercise.exercise_id, (None, None))[0],
-            thumbnail_url=images.get(exercise.exercise_id, (None, None))[1],
-            exercise_type=exercise.exercise_type,
-            tracking_type=exercise.tracking_type,
-            ai_algorithm=exercise.ai_algorithm,
-            mechanics=exercise.mechanics,
-            force_type=exercise.force_type,
-            experience_level=exercise.experience_level,
-        )
-        for exercise, name, translation_language in rows
-    ]
-
-    return Page[ExerciseListItem](
-        items=items, page=page, limit=limit, total=total or 0
-    )
+    return conditions
 
 
 @router.get("/{exercise_id}", response_model=ExerciseDetail)
