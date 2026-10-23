@@ -12,6 +12,9 @@ request shape, the error handling. The rest of the application says "user" and
 
 from __future__ import annotations
 
+import asyncio
+import time
+
 import httpx
 
 from app.core.config import settings
@@ -43,6 +46,20 @@ _ENDPOINT = (
 # Long enough for a considered answer, short enough that a user staring at a
 # typing indicator gets an error instead of an indefinite wait.
 _TIMEOUT_SECONDS = 30.0
+
+# Google answers "503 - this model is currently experiencing high demand" in
+# bursts that pass within seconds: measured on 2026-10-22, 3 of 7 calls to
+# gemini-3.1-flash-lite were refused that way and the same request a moment
+# later went through. The coach used to show every one of them to the user as
+# "no reply came back". Server-side faults (5xx) are retried after these
+# pauses; anything the request itself caused (4xx, 429 included) is not.
+_RETRY_STATUSES = frozenset({500, 502, 503, 504})
+_RETRY_DELAYS = (1.0, 2.0)
+
+# No retry starts after this much time has gone. The app gives the coach 60 s
+# in all, and a retry that cannot finish inside that only makes the user wait
+# longer for the same error.
+_RETRY_BUDGET_SECONDS = 20.0
 
 
 class AiCoachUnavailable(RuntimeError):
@@ -122,13 +139,7 @@ async def generate_reply(
 
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS) as client:
-            response = await client.post(
-                url,
-                json=payload,
-                # In the header, not the query string: a key in a URL ends up
-                # in logs, proxies and error reports.
-                headers={"x-goog-api-key": settings.gemini_api_key or ""},
-            )
+            response = await _post_with_retry(client, url, payload)
     except httpx.TimeoutException as exc:
         raise AiCoachUnavailable("The coach took too long to answer.") from exc
     except httpx.HTTPError as exc:
@@ -150,6 +161,34 @@ async def generate_reply(
         )
 
     return _extract_text(response.json())
+
+
+async def _post_with_retry(
+    client: httpx.AsyncClient, url: str, payload: dict
+) -> httpx.Response:
+    """One generateContent call, repeated while Google says it is overloaded.
+
+    Returns the last response whatever its status, so the caller's error
+    mapping sees exactly what it saw before. A timeout is not retried: it has
+    already spent the whole per-call budget.
+    """
+    started = time.monotonic()
+    for delay in (*_RETRY_DELAYS, None):
+        response = await client.post(
+            url,
+            json=payload,
+            # In the header, not the query string: a key in a URL ends up
+            # in logs, proxies and error reports.
+            headers={"x-goog-api-key": settings.gemini_api_key or ""},
+        )
+        if (
+            response.status_code not in _RETRY_STATUSES
+            or delay is None
+            or time.monotonic() - started + delay > _RETRY_BUDGET_SECONDS
+        ):
+            return response
+        await asyncio.sleep(delay)
+    raise AssertionError("unreachable")  # the loop always returns
 
 
 def _extract_text(body: dict) -> str:
