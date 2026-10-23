@@ -26,7 +26,7 @@ def coach(monkeypatch):
     """Replaces the model with a stub that records what it was shown."""
     calls: list[tuple[list[tuple[str, str]], str]] = []
 
-    async def fake_reply(history, question, context=None):
+    async def fake_reply(history, question, context=None, tools=None):
         calls.append((list(history), question))
         return f"Trả lời: {question}"
 
@@ -42,7 +42,7 @@ def _break_coach(monkeypatch):
     here is what happens to a conversation that was working a moment ago.
     """
 
-    async def fail(history, question, context=None):
+    async def fail(history, question, context=None, tools=None):
         raise gemini.AiCoachUnavailable("The coach took too long to answer.")
 
     monkeypatch.setattr(ai_coach, "generate_reply", fail)
