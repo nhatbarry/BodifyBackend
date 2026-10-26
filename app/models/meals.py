@@ -19,7 +19,7 @@ from sqlalchemy import (
     Text,
     func,
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -181,6 +181,13 @@ class MealItem(Base):
     planned_unit: Mapped[str | None] = mapped_column(String(10))
     planned_energy_kcal: Mapped[Decimal | None] = mapped_column(Numeric(8, 2))
 
+    # Set when the entry was confirmed from a photo's draft. The analysis does
+    # not write items; the user saves them, and the item points back.
+    photo_analysis_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("meal_photo_analyses.analysis_id", ondelete="SET NULL"),
+    )
+
     sort_order: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default="0"
     )
@@ -194,3 +201,40 @@ class MealItem(Base):
 
     meal: Mapped["Meal"] = relationship(back_populates="items")
     food: Mapped["Food | None"] = relationship(viewonly=True)
+
+
+ANALYSIS_OK = "ok"
+ANALYSIS_FAILED = "failed"
+
+
+class MealPhotoAnalysis(Base):
+    """One photo the model was asked about. See sql_script/ddl_meal_photo_analysis.sql.
+
+    Failed requests are recorded too, so a run of failures is visible; only
+    `ok` rows count against the user's daily limit, because a failure was not
+    something the user got.
+    """
+
+    __tablename__ = "meal_photo_analyses"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('ok', 'failed')", name="chk_meal_photo_analyses_status"
+        ),
+        Index("idx_meal_photo_analyses_user_created", "user_id", "created_at"),
+    )
+
+    analysis_id: Mapped[int] = mapped_column(
+        BigInteger, primary_key=True, autoincrement=True
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    meal_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("meals.meal_id", ondelete="SET NULL")
+    )
+    photo_key: Mapped[str | None] = mapped_column(Text)
+    model: Mapped[str] = mapped_column(String(80), nullable=False)
+    status: Mapped[str] = mapped_column(String(10), nullable=False)
+    result: Mapped[dict | None] = mapped_column(JSONB)
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )

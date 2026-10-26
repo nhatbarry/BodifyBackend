@@ -20,14 +20,24 @@ import uuid
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 
-from fastapi import APIRouter, HTTPException, Query, Response, status
+from fastapi import APIRouter, File, HTTPException, Query, Response, UploadFile, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.api.dependencies import CurrentUserDep, DbSession
 from app.api.endpoints.foods import DEFAULT_LANG, _component_names, _name_for, _to_summary
 from app.models.foods import Food, FoodCategory
-from app.models.meals import STATUS_EATEN, STATUS_PLANNED, UNIT_SERVING, Meal, MealItem
+from app.core.config import settings
+from app.models.meals import (
+    ANALYSIS_FAILED,
+    ANALYSIS_OK,
+    STATUS_EATEN,
+    STATUS_PLANNED,
+    UNIT_SERVING,
+    Meal,
+    MealItem,
+    MealPhotoAnalysis,
+)
 from app.models.nutrition_targets import NutritionTarget
 from app.schemas.meals import (
     CalendarDay,
@@ -42,10 +52,20 @@ from app.schemas.meals import (
     MealRead,
     MealUpdate,
     NutritionTargetRead,
+    PhotoAnalysisRead,
     RecentFood,
     Totals,
 )
+from app.services import food_photo
+from app.services.gemini import (
+    FoodPhotoQuotaExceeded,
+    FoodPhotoUnavailable,
+    analyze_food_photo,
+)
+from app.services.image_upload import MAX_UPLOAD_BYTES, InvalidImage
+from app.services.meal_photo import PHOTO_CONTENT_TYPE, discard, photo_url, store_photo
 from app.services.nutrition import MACRO_FIELDS, portion
+from app.services.storage import StorageWriteUnavailable
 
 router = APIRouter(tags=["meals"])
 
@@ -82,6 +102,7 @@ def _planned_kcal(items: list[MealItem]) -> Decimal:
 
 def _to_read(meal: Meal) -> MealRead:
     result = MealRead.model_validate(meal)
+    result.photo_url = photo_url(meal.photo_key)
     result.items = [MealItemRead.model_validate(i) for i in meal.items]
     result.totals = _totals(list(meal.items))
     result.planned_kcal = _planned_kcal(list(meal.items))
@@ -112,6 +133,23 @@ def _owned_item(db: Session, item_id: int, user_id: uuid.UUID) -> MealItem:
             status_code=status.HTTP_404_NOT_FOUND, detail="Meal item not found"
         )
     return item
+
+
+def _check_analysis(db: Session, analysis_id: int | None, user_id: uuid.UUID) -> None:
+    """A photo_analysis_id must be one of the caller's own: 404 otherwise, so
+    the API does not confirm another user's analysis exists."""
+    if analysis_id is None:
+        return
+    found = db.scalar(
+        select(MealPhotoAnalysis.analysis_id).where(
+            MealPhotoAnalysis.analysis_id == analysis_id,
+            MealPhotoAnalysis.user_id == user_id,
+        )
+    )
+    if found is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Photo analysis not found"
+        )
 
 
 def _food_name(food: Food) -> str:
@@ -351,9 +389,165 @@ def delete_meal(
 ) -> Response:
     """Remove a whole meal and everything logged or planned in it."""
     meal = _owned_meal(db, meal_id, current_user.id)
+    key = meal.photo_key
     db.delete(meal)
     db.commit()
+    # After the commit: a photo is removed only once nothing points at it.
+    discard(key)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# --------------------------------------------------------------------------
+# The meal's photo
+# --------------------------------------------------------------------------
+
+
+def _replace_photo(db: Session, meal: Meal, upload: UploadFile) -> bytes:
+    """Store a new photo on the meal and drop the old one. Returns the bytes
+    as stored, which is what the model is shown."""
+    # Read with a cap rather than trusting Content-Length, which the client
+    # sets. One byte over the limit is enough to know it is too big.
+    raw = upload.file.read(MAX_UPLOAD_BYTES + 1)
+    try:
+        key, processed = store_photo(meal.user_id, raw)
+    except InvalidImage as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+    except StorageWriteUnavailable as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Photo uploads are not configured on this server",
+        ) from exc
+
+    previous = meal.photo_key
+    meal.photo_key = key
+    meal.updated_at = func.now()
+    db.commit()
+    db.refresh(meal)
+    # The old object goes only after the new one is up and referenced: losing
+    # the current photo because the replacement failed is the worse outcome.
+    if previous != key:
+        discard(previous)
+    return processed
+
+
+@router.post("/meals/{meal_id}/photo", response_model=MealRead)
+def upload_meal_photo(
+    meal_id: int,
+    current_user: CurrentUserDep,
+    db: DbSession,
+    file: UploadFile = File(...),
+) -> MealRead:
+    """Attach a photo to a meal, replacing any it had.
+
+    Re-encoded (EXIF and its GPS dropped, at most 1280 px, webp) before it is
+    stored - see services/meal_photo.py.
+    """
+    meal = _owned_meal(db, meal_id, current_user.id)
+    _replace_photo(db, meal, file)
+    return _to_read(meal)
+
+
+@router.delete("/meals/{meal_id}/photo", response_model=MealRead)
+def remove_meal_photo(
+    meal_id: int,
+    current_user: CurrentUserDep,
+    db: DbSession,
+) -> MealRead:
+    """Drop the meal's photo. The row is cleared even if the object cannot be
+    removed - a photo the user asked to delete must stop showing."""
+    meal = _owned_meal(db, meal_id, current_user.id)
+    key = meal.photo_key
+    meal.photo_key = None
+    meal.updated_at = func.now()
+    db.commit()
+    db.refresh(meal)
+    discard(key)
+    return _to_read(meal)
+
+
+@router.post(
+    "/meals/{meal_id}/photo-analysis",
+    response_model=PhotoAnalysisRead,
+    status_code=status.HTTP_201_CREATED,
+)
+async def analyze_meal_photo(
+    meal_id: int,
+    current_user: CurrentUserDep,
+    db: DbSession,
+    file: UploadFile = File(...),
+    language: str = Query(DEFAULT_LANG, min_length=2, max_length=5),
+) -> PhotoAnalysisRead:
+    """Photograph a plate, get back a draft of what is on it.
+
+    **Writes nothing to the diary.** The photo becomes the meal's photo; the
+    dishes come back as a draft - each with up to three catalog matches,
+    priced in the unit that food accepts, and the model's own estimate for
+    when none fits. The user confirms, and the app saves through
+    `POST /meal-items` / `/meal-items/custom` with `photo_analysis_id` set.
+
+    The photo is stored before the model is asked, as a chat question is saved
+    before the coach answers: a failed analysis still leaves the user with the
+    photo they took.
+    """
+    meal = _owned_meal(db, meal_id, current_user.id)
+
+    # Both checked before anything is stored, so a refusal costs no upload.
+    if not settings.can_use_ai_coach:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Photo analysis is not configured on this server",
+        )
+    limit = settings.food_photo_daily_limit
+    if food_photo.used_today(db, current_user.id) >= limit:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=(
+                f"Bạn đã dùng hết {limit} lượt phân tích ảnh trong 24 giờ qua. "
+                "Hãy thêm món thủ công hoặc thử lại sau."
+            ),
+        )
+
+    processed = _replace_photo(db, meal, file)
+
+    analysis = MealPhotoAnalysis(
+        user_id=current_user.id,
+        meal_id=meal.meal_id,
+        photo_key=meal.photo_key,
+        model=settings.vision_model,
+        status=ANALYSIS_FAILED,
+    )
+    db.add(analysis)
+
+    try:
+        raw = await analyze_food_photo(processed, PHOTO_CONTENT_TYPE)
+    except FoodPhotoUnavailable as exc:
+        # Recorded, so a run of failures is visible; not counted against the
+        # user's limit, because they got nothing for it.
+        analysis.error = str(exc)
+        db.commit()
+        raise HTTPException(
+            status_code=(
+                status.HTTP_429_TOO_MANY_REQUESTS
+                if isinstance(exc, FoodPhotoQuotaExceeded)
+                else status.HTTP_503_SERVICE_UNAVAILABLE
+            ),
+            detail=str(exc),
+        ) from exc
+
+    analysis.status = ANALYSIS_OK
+    analysis.result = raw
+    db.commit()
+    db.refresh(analysis)
+
+    is_food, detected = food_photo.clean(raw)
+    return PhotoAnalysisRead(
+        analysis_id=analysis.analysis_id,
+        meal=_to_read(meal),
+        is_food=is_food,
+        items=food_photo.draft(db, detected, language),
+    )
 
 
 # --------------------------------------------------------------------------
@@ -377,6 +571,7 @@ def log_meal_item(
     later with a different amount leaves what was planned on record.
     """
     meal = _owned_meal(db, payload.meal_id, current_user.id)
+    _check_analysis(db, payload.photo_analysis_id, current_user.id)
 
     food = db.scalar(
         select(Food)
@@ -401,6 +596,7 @@ def log_meal_item(
             quantity=payload.quantity,
             unit=payload.unit,
             status=payload.status,
+            photo_analysis_id=payload.photo_analysis_id,
             **values,
         ),
     )
@@ -428,6 +624,7 @@ def log_custom_item(
     the same as a catalog entry does.
     """
     meal = _owned_meal(db, payload.meal_id, current_user.id)
+    _check_analysis(db, payload.photo_analysis_id, current_user.id)
     q = payload.quantity
 
     return _append_item(
@@ -442,6 +639,7 @@ def log_custom_item(
             unit=UNIT_SERVING,
             grams=None,
             status=payload.status,
+            photo_analysis_id=payload.photo_analysis_id,
             energy_kcal=_cents(payload.energy_kcal * q),
             protein_g=_times(payload.protein_g, q),
             fat_g=_times(payload.fat_g, q),
