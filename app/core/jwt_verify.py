@@ -25,6 +25,9 @@ from app.core.config import settings
 # "none" or an HMAC algorithm is refused rather than trusted.
 _ALGORITHMS = ["ES256", "RS256"]
 _AUDIENCE = "authenticated"
+# Small enough not to matter for expiry (tokens live an hour), large enough
+# for ordinary clock drift between GoTrue and this server.
+_CLOCK_LEEWAY_SECONDS = 30
 
 
 class TokenInvalid(Exception):
@@ -73,6 +76,11 @@ def verify(token: str) -> TokenClaims:
             audience=_AUDIENCE,
             issuer=_auth_base(),
             options={"require": ["exp", "sub", "session_id"]},
+            # GoTrue's clock and ours are never exactly equal. Without
+            # leeway a token is refused as "not yet valid (iat)" for as long
+            # as this server runs behind: measured 3 s on a dev PC, which
+            # broke every request made straight after sign-in.
+            leeway=_CLOCK_LEEWAY_SECONDS,
         )
         return TokenClaims(
             user_id=uuid.UUID(claims["sub"]),
