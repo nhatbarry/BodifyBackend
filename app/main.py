@@ -2,6 +2,7 @@ from fastapi import FastAPI
 
 from app.api.endpoints import (
     admin_analytics,
+    admin_mfa,
     ai_coach,
     auth,
     body_metrics,
@@ -71,6 +72,9 @@ app.include_router(nutrition.router, prefix=API_V1_PREFIX)
 
 # Admin dashboard: analytics and operating costs, admin role only.
 app.include_router(admin_analytics.router, prefix=API_V1_PREFIX)
+# Its second factor: a code from an authenticator app, required by every
+# other admin route.
+app.include_router(admin_mfa.router, prefix=API_V1_PREFIX)
 
 
 @app.get("/")

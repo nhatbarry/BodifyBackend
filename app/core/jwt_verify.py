@@ -42,6 +42,11 @@ class KeysUnavailable(Exception):
 class TokenClaims:
     user_id: uuid.UUID
     session_id: uuid.UUID
+    # Authenticator assurance level. "aal1" after a password (or any single
+    # factor), "aal2" once a second factor - here an authenticator app's
+    # code - has been verified on this session. GoTrue signs it into every
+    # token and keeps it across refreshes, so it is as trustworthy as `sub`.
+    aal: str = "aal1"
 
 
 def _auth_base() -> str:
@@ -85,6 +90,7 @@ def verify(token: str) -> TokenClaims:
         return TokenClaims(
             user_id=uuid.UUID(claims["sub"]),
             session_id=uuid.UUID(claims["session_id"]),
+            aal=claims.get("aal") or "aal1",
         )
     except (jwt.PyJWTError, ValueError) as exc:
         raise TokenInvalid(str(exc)) from exc
