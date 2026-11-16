@@ -6,7 +6,7 @@ from typing import Annotated
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.orm import Session
 
 from app.core.jwt_verify import KeysUnavailable, TokenInvalid, verify
@@ -35,6 +35,8 @@ class CurrentUser:
     created_at: datetime | None
     profile: UserProfile | None
     role: str
+    # "aal2" once an authenticator code was verified on this session.
+    aal: str = "aal1"
 
 
 def require_bearer(
@@ -111,20 +113,71 @@ def get_current_user(
         profile=profile,
         # A user without a profile row yet is still just a regular user.
         role=profile.role if profile else "user",
+        aal=claims.aal,
     )
 
 
 CurrentUserDep = Annotated[CurrentUser, Depends(get_current_user)]
 
 
-def require_admin(current_user: CurrentUserDep) -> CurrentUser:
-    """Guard for admin-only routes (the future admin dashboard)."""
+def require_admin_role(current_user: CurrentUserDep) -> CurrentUser:
+    """Admin role, signed in with a password only.
+
+    For the second-factor routes alone (`/admin/mfa/*`): they are how a
+    password-only session becomes a two-factor one, so they cannot demand
+    the second factor themselves. Everything else uses `require_admin`.
+    """
     if current_user.role != "admin":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin privileges required",
         )
     return current_user
+
+
+AdminRoleDep = Annotated[CurrentUser, Depends(require_admin_role)]
+
+
+def has_verified_mfa_factor(db: Session, user_id: uuid.UUID) -> bool:
+    """Whether the account has an authenticator app set up and confirmed.
+
+    Read straight from GoTrue's table (read-only, like `auth.users`): it is
+    one indexed lookup, against a network round trip to ask GoTrue.
+    """
+    return bool(
+        db.execute(
+            text(
+                "SELECT EXISTS (SELECT 1 FROM auth.mfa_factors "
+                "WHERE user_id = :uid AND status = 'verified')"
+            ),
+            {"uid": user_id},
+        ).scalar()
+    )
+
+
+def require_admin(current_user: AdminRoleDep, db: DbSession) -> CurrentUser:
+    """Guard for admin routes: admin role *and* an authenticator code.
+
+    A password alone is not enough for the console. The session has to be
+    at "aal2", which GoTrue grants only after a code from an authenticator
+    app (Microsoft Authenticator, Google Authenticator, ...) was verified
+    through `/admin/mfa/verify`. Hiding pages in the browser is navigation,
+    never authorization - this is the check.
+
+    The refusal carries a machine-readable `code` so the console knows which
+    screen to show: set up an authenticator first, or enter its code.
+    """
+    if current_user.aal == "aal2":
+        return current_user
+
+    if has_verified_mfa_factor(db, current_user.id):
+        code, message = "mfa_verify_required", "Enter the code from your authenticator app."
+    else:
+        code, message = "mfa_enroll_required", "Set up an authenticator app to use the admin console."
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail={"code": code, "message": message},
+    )
 
 
 AdminUserDep = Annotated[CurrentUser, Depends(require_admin)]
