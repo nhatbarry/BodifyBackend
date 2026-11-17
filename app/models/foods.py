@@ -122,6 +122,11 @@ class Food(Base):
     is_hidden: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="false"
     )
+    # An admin's own show/hide choice, from the admin console. NULL means
+    # "follow the duplicate rule"; hide_duplicate_foods.sql applies a non-NULL
+    # value over that rule, so a reseed cannot undo it. Every read still
+    # filters `is_hidden` alone - the console writes both together.
+    hidden_override: Mapped[bool | None] = mapped_column(Boolean)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

@@ -31,6 +31,11 @@ class User(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
     email: Mapped[str | None] = mapped_column(String)
     created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Set by GoTrue when an admin locks the account (`ban_duration`). Read by
+    # `get_current_user`, because a ban only stops GoTrue issuing new tokens:
+    # an access token verified locally would otherwise work until it expires.
+    banned_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_sign_in_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     profile: Mapped["UserProfile | None"] = relationship(
         "UserProfile",

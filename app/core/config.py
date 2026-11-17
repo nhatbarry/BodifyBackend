@@ -116,6 +116,16 @@ class Settings(BaseSettings):
     def vision_model(self) -> str:
         return self.gemini_vision_model or self.gemini_model
 
+    # Browser origins allowed to call the API: the admin console, when it is
+    # served from a domain of its own. Comma-separated. The mobile app is not a
+    # browser and needs none; the console's dev server proxies /api and needs
+    # none either, so the default only covers `vite preview` and a local build.
+    admin_cors_origins: str = "http://localhost:5173,http://localhost:4173"
+
+    @property
+    def admin_cors_origin_list(self) -> list[str]:
+        return [o.strip().rstrip("/") for o in self.admin_cors_origins.split(",") if o.strip()]
+
     @property
     def can_use_google_oauth(self) -> bool:
         return bool(self.google_oauth_client_id)
