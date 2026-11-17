@@ -100,6 +100,8 @@ def get_current_user(
             AuthSession.id == claims.session_id,
             AuthSession.user_id == claims.user_id,
             or_(AuthSession.not_after.is_(None), AuthSession.not_after > func.now()),
+            # A locked account is refused at once, not when its token expires.
+            or_(User.banned_until.is_(None), User.banned_until <= func.now()),
         )
     ).first()
     if row is None:

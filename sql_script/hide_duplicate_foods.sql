@@ -26,10 +26,15 @@
 --   4. the most macros published (protein, fat, carbohydrate, fibre)
 --   5. lowest food_id
 --
--- Idempotent. Undo: UPDATE foods SET is_hidden = false;
+-- An admin's own choice wins: `hidden_override` (set from the admin console,
+-- alter_foods_hidden_override.sql) is applied over the rule when not NULL,
+-- so re-running this after a reseed does not undo what an admin hid or showed.
+--
+-- Idempotent. Undo: UPDATE foods SET is_hidden = coalesce(hidden_override, false);
 -- ============================================================
 
 ALTER TABLE foods ADD COLUMN IF NOT EXISTS is_hidden BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE foods ADD COLUMN IF NOT EXISTS hidden_override BOOLEAN;
 
 WITH named AS (
     SELECT
@@ -66,10 +71,10 @@ ranked AS (
     WHERE norm IS NOT NULL
 )
 UPDATE foods f
-SET is_hidden = (r.rank > 1)
+SET is_hidden = coalesce(f.hidden_override, r.rank > 1)
 FROM ranked r
 WHERE r.food_id = f.food_id
-  AND f.is_hidden IS DISTINCT FROM (r.rank > 1);
+  AND f.is_hidden IS DISTINCT FROM coalesce(f.hidden_override, r.rank > 1);
 
 CREATE INDEX IF NOT EXISTS idx_foods_visible
     ON foods (food_id) WHERE NOT is_hidden;

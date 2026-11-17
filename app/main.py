@@ -1,8 +1,14 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
+from app.core.config import settings
 from app.api.endpoints import (
     admin_analytics,
+    admin_catalog,
+    admin_exercises,
+    admin_foods,
     admin_mfa,
+    admin_users,
     ai_coach,
     auth,
     body_metrics,
@@ -30,6 +36,16 @@ API_V1_PREFIX = "/api/v1"
 app = FastAPI(
     title="Bodify API",
     version="1.0.0",
+)
+
+# Only the admin console runs in a browser. Bearer tokens, no cookies, so no
+# credentials mode: an origin outside the list simply cannot read responses.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.admin_cors_origin_list,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+    allow_headers=["Authorization", "Content-Type"],
+    max_age=600,
 )
 
 app.include_router(health.router, prefix=API_V1_PREFIX)
@@ -75,6 +91,11 @@ app.include_router(admin_analytics.router, prefix=API_V1_PREFIX)
 # Its second factor: a code from an authenticator app, required by every
 # other admin route.
 app.include_router(admin_mfa.router, prefix=API_V1_PREFIX)
+# Catalog maintenance and accounts. Every route requires an admin at aal2.
+app.include_router(admin_catalog.router, prefix=API_V1_PREFIX)
+app.include_router(admin_exercises.router, prefix=API_V1_PREFIX)
+app.include_router(admin_foods.router, prefix=API_V1_PREFIX)
+app.include_router(admin_users.router, prefix=API_V1_PREFIX)
 
 
 @app.get("/")
