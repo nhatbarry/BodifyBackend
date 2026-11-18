@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-UserRole = Literal["user", "admin"]
+UserRole = Literal["user", "admin", "superadmin"]
 
 
 class UserProfileBase(BaseModel):

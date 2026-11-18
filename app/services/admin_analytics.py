@@ -73,7 +73,6 @@ def cached(fn: F) -> F:
 # tz database (Windows Python ships none, nor does every slim image).
 VN = timezone(timedelta(hours=7))
 TZ_NAME = "Asia/Ho_Chi_Minh"
-SEED_PATTERN = "%@seed.bodify.example"
 MAX_DAYS = 366
 
 Scope = Literal["all", "real", "seeded"]
@@ -113,14 +112,15 @@ def today_vn() -> date:
     return datetime.now(VN).date()
 
 
-# Accounts in scope. auth.users is GoTrue's table and is only read here.
+# Accounts in scope. Through masked.accounts, never auth.users: a non-
+# superadmin's request runs under a role that cannot read auth.* at all
+# (app/db/pii.py). `is_seeded` is worked out there from the real address.
 SCOPED = """
 scoped as (
-    select u.id as user_id, u.created_at
-      from auth.users u
+    select u.user_id, u.created_at
+      from masked.accounts u
      where u.deleted_at is null
-       and (:scope = 'all'
-            or (coalesce(u.email, '') like :seed_pattern) = (:scope = 'seeded'))
+       and (:scope = 'all' or u.is_seeded = (:scope = 'seeded'))
 )"""
 
 # One row per (account, Vietnamese day) on which it wrote something.
@@ -159,7 +159,7 @@ DURATION = (
 
 
 def _params(window: Window, **extra: Any) -> dict[str, Any]:
-    return {"tz": TZ_NAME, "seed_pattern": SEED_PATTERN, "scope": window.scope, **extra}
+    return {"tz": TZ_NAME, "scope": window.scope, **extra}
 
 
 def _days_sql() -> str:
@@ -236,10 +236,8 @@ def overview(db: Session, window: Window) -> dict[str, Any]:
 
     seeded_accounts = db.execute(
         text(
-            "select count(*) from auth.users"
-            " where deleted_at is null and coalesce(email, '') like :seed_pattern"
+            "select count(*) from masked.accounts where deleted_at is null and is_seeded"
         ),
-        {"seed_pattern": SEED_PATTERN},
     ).scalar_one()
 
     active = db.execute(

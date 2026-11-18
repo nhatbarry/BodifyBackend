@@ -2,7 +2,7 @@
 
 Every service is on a free plan, so these figures are a simulation with
 example prices and no free allowance. The tests pin the arithmetic the page
-relies on: fees are charged per day, every unit is billed from the first
+relies on: there is no plan fee, every unit is billed from the first
 one, and the daily series adds up to the line totals.
 """
 
@@ -29,15 +29,16 @@ def _line(result: dict, key: str) -> dict:
     return next(l for p in result["providers"] for l in p["lines"] if l["key"] == key)
 
 
-def test_thirty_days_charge_one_full_monthly_fee():
+def test_there_is_no_plan_fee_only_usage():
+    keys = {l["key"] for p in cs.build(_days(1), database_bytes=0)["providers"] for l in p["lines"]}
+    assert not any(k.endswith("_plan") for k in keys)
+
+
+def test_compute_is_billed_by_the_hour():
     result = cs.build(_days(30), database_bytes=0)
-    assert _line(result, "supabase_plan")["cost_usd"] == pytest.approx(cs.SUPABASE_PRO_MONTHLY)
-    assert _line(result, "railway_plan")["cost_usd"] == pytest.approx(cs.RAILWAY_HOBBY_MONTHLY)
-
-
-def test_fees_are_prorated_by_day():
-    result = cs.build(_days(3), database_bytes=0)
-    assert _line(result, "supabase_plan")["cost_usd"] == pytest.approx(cs.SUPABASE_PRO_MONTHLY / 10, abs=1e-4)
+    line = _line(result, "supabase_compute")
+    assert line["quantity"] == pytest.approx(30 * 24)
+    assert line["cost_usd"] == pytest.approx(30 * 24 * cs.SUPABASE_COMPUTE_PER_HOUR)
 
 
 def test_nothing_is_free_the_first_unit_is_billed():

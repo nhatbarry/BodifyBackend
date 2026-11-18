@@ -14,7 +14,7 @@ from fastapi import APIRouter, Query, Response, status
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import AdminUserDep, DbSession
+from app.api.dependencies import DbSession, requires
 from app.models.foods import Food, FoodCategory, FoodComponent, FoodTranslation
 from app.models.meals import MealItem
 from app.schemas.admin_foods import (
@@ -33,6 +33,11 @@ from app.services.admin_common import committing, conflict, not_found
 from app.services.storage import presigned_url
 
 router = APIRouter(prefix="/admin/foods", tags=["admin-foods"])
+
+FoodsView = requires("foods.view")
+FoodsCreate = requires("foods.create")
+FoodsUpdate = requires("foods.update")
+FoodsDelete = requires("foods.delete")
 
 
 def _visibility(food: Food) -> Visibility:
@@ -55,7 +60,7 @@ def _image(key: str | None) -> str | None:
 
 @router.get("", response_model=Page[FoodAdminSummary])
 def list_foods(
-    _: AdminUserDep,
+    _: FoodsView,
     db: DbSession,
     search: Annotated[str | None, Query(max_length=100)] = None,
     basis: Basis | None = None,
@@ -229,12 +234,12 @@ def _apply(db: Session, food: Food, payload: FoodWrite) -> None:
 
 
 @router.get("/{food_id}", response_model=FoodAdminDetail)
-def get_food(food_id: int, _: AdminUserDep, db: DbSession) -> FoodAdminDetail:
+def get_food(food_id: int, _: FoodsView, db: DbSession) -> FoodAdminDetail:
     return _detail(db, food_id)
 
 
 @router.post("", response_model=FoodAdminDetail, status_code=status.HTTP_201_CREATED)
-def create_food(payload: FoodWrite, _: AdminUserDep, db: DbSession) -> FoodAdminDetail:
+def create_food(payload: FoodWrite, _: FoodsCreate, db: DbSession) -> FoodAdminDetail:
     with committing(db):
         food = Food(source=payload.source, basis=payload.basis, energy_kcal=payload.energy_kcal)
         db.add(food)
@@ -244,7 +249,7 @@ def create_food(payload: FoodWrite, _: AdminUserDep, db: DbSession) -> FoodAdmin
 
 
 @router.put("/{food_id}", response_model=FoodAdminDetail)
-def update_food(food_id: int, payload: FoodWrite, _: AdminUserDep, db: DbSession) -> FoodAdminDetail:
+def update_food(food_id: int, payload: FoodWrite, _: FoodsUpdate, db: DbSession) -> FoodAdminDetail:
     food = db.get(Food, food_id)
     if food is None:
         raise not_found("thực phẩm")
@@ -254,7 +259,7 @@ def update_food(food_id: int, payload: FoodWrite, _: AdminUserDep, db: DbSession
 
 
 @router.delete("/{food_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_food(food_id: int, _: AdminUserDep, db: DbSession) -> Response:
+def delete_food(food_id: int, _: FoodsDelete, db: DbSession) -> Response:
     """Diary entries keep their name and figures and lose only the link, so
     they can no longer open the recipe or be rescaled in grams. Hiding the
     row (`visibility: hidden`) avoids that and is usually what is wanted."""

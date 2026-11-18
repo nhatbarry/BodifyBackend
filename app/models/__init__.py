@@ -1,3 +1,4 @@
+from app.models.admin_roles import AdminRole, AdminRolePermission, Permission, UserAdminRole
 from app.models.body_metrics import BodyMetric
 from app.models.equipment import Equipment
 from app.models.exercise_equipment import ExerciseEquipment
@@ -8,6 +9,7 @@ from app.models.exercises import Exercise
 from app.models.health_daily import HealthDaily
 from app.models.foods import Food, FoodCategory, FoodComponent, FoodTranslation
 from app.models.meals import Meal, MealItem, MealPhotoAnalysis
+from app.models.masked_accounts import MaskedAccount
 from app.models.muscle_groups import MuscleGroup
 from app.models.nutrition_targets import NutritionTarget
 from app.models.schedules import Schedule
@@ -23,6 +25,10 @@ from app.models.workout_plans import WorkoutPlan
 from app.models.workout_sessions import WorkoutSession
 
 __all__ = [
+    "AdminRole",
+    "AdminRolePermission",
+    "Permission",
+    "UserAdminRole",
     "BodyMetric",
     "Equipment",
     "Exercise",
@@ -35,6 +41,7 @@ __all__ = [
     "FoodComponent",
     "FoodTranslation",
     "Meal",
+    "MaskedAccount",
     "MealItem",
     "MealPhotoAnalysis",
     "MuscleGroup",

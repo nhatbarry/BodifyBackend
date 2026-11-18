@@ -14,7 +14,7 @@ from fastapi import APIRouter, Query, Response, status
 from sqlalchemy import delete, exists, func, select, text
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import AdminUserDep, DbSession
+from app.api.dependencies import DbSession, requires
 from app.models.equipment import Equipment
 from app.models.exercise_equipment import ExerciseEquipment
 from app.models.exercise_media import ExerciseMedia
@@ -39,6 +39,11 @@ from app.services.admin_common import committing, conflict, not_found
 from app.services.exercise_media import list_image_urls, url_or_none
 
 router = APIRouter(prefix="/admin/exercises", tags=["admin-exercises"])
+
+ExercisesView = requires("exercises.view")
+ExercisesCreate = requires("exercises.create")
+ExercisesUpdate = requires("exercises.update")
+ExercisesDelete = requires("exercises.delete")
 
 
 def _label(model, id_col, ts_col):
@@ -83,7 +88,7 @@ def _usage(db: Session, exercise_id: int) -> ExerciseUsage:
 
 @router.get("", response_model=Page[ExerciseAdminSummary])
 def list_exercises(
-    _: AdminUserDep,
+    _: ExercisesView,
     db: DbSession,
     search: Annotated[str | None, Query(max_length=100)] = None,
     muscle_id: int | None = None,
@@ -344,12 +349,12 @@ def _apply(db: Session, exercise: Exercise, payload: ExerciseWrite) -> None:
 
 
 @router.get("/{exercise_id}", response_model=ExerciseAdminDetail)
-def get_exercise(exercise_id: int, _: AdminUserDep, db: DbSession) -> ExerciseAdminDetail:
+def get_exercise(exercise_id: int, _: ExercisesView, db: DbSession) -> ExerciseAdminDetail:
     return _detail(db, exercise_id)
 
 
 @router.post("", response_model=ExerciseAdminDetail, status_code=status.HTTP_201_CREATED)
-def create_exercise(payload: ExerciseWrite, _: AdminUserDep, db: DbSession) -> ExerciseAdminDetail:
+def create_exercise(payload: ExerciseWrite, _: ExercisesCreate, db: DbSession) -> ExerciseAdminDetail:
     _check_references(db, payload)
     with committing(db):
         exercise = Exercise(tracking_type=payload.tracking_type)
@@ -361,7 +366,7 @@ def create_exercise(payload: ExerciseWrite, _: AdminUserDep, db: DbSession) -> E
 
 @router.put("/{exercise_id}", response_model=ExerciseAdminDetail)
 def update_exercise(
-    exercise_id: int, payload: ExerciseWrite, _: AdminUserDep, db: DbSession
+    exercise_id: int, payload: ExerciseWrite, _: ExercisesUpdate, db: DbSession
 ) -> ExerciseAdminDetail:
     exercise = db.get(Exercise, exercise_id)
     if exercise is None:
@@ -373,7 +378,7 @@ def update_exercise(
 
 
 @router.delete("/{exercise_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_exercise(exercise_id: int, _: AdminUserDep, db: DbSession) -> Response:
+def delete_exercise(exercise_id: int, _: ExercisesDelete, db: DbSession) -> Response:
     """Refused while anything points at it.
 
     Plans and sessions would block the delete anyway (RESTRICT), but personal

@@ -8,7 +8,9 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-Role = Literal["user", "admin"]
+from app.schemas.admin_roles import AdminRoleRef
+
+Role = Literal["user", "admin", "superadmin"]
 
 
 class AdminUserSummary(BaseModel):
@@ -22,6 +24,10 @@ class AdminUserSummary(BaseModel):
     is_banned: bool
     is_seeded: bool
     mfa_enabled: bool
+    # True when email and name above are masked (anyone but a superadmin).
+    pii_masked: bool = False
+    # The roles an admin holds; empty for users and superadmins.
+    admin_roles: list[AdminRoleRef] = []
 
 
 class AdminUserActivity(BaseModel):
@@ -34,7 +40,9 @@ class AdminUserActivity(BaseModel):
 
 class AdminUserDetail(AdminUserSummary):
     avatar_url: str | None
+    # Null when masked; the year is always given.
     date_of_birth: date | None
+    birth_year: int | None
     gender: str | None
     has_profile: bool
     providers: list[str]
@@ -42,7 +50,10 @@ class AdminUserDetail(AdminUserSummary):
 
 
 class RoleUpdate(BaseModel):
-    role: Role
+    """Superadmin, or back to a regular user. Making someone an admin is
+    giving them a role: `PUT /admin/users/{id}/admin-roles`."""
+
+    role: Literal["user", "superadmin"]
 
 
 class BanRequest(BaseModel):

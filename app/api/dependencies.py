@@ -10,6 +10,8 @@ from sqlalchemy import func, or_, select, text
 from sqlalchemy.orm import Session
 
 from app.core.jwt_verify import KeysUnavailable, TokenInvalid, verify
+from app.core.permissions import ALL_PERMISSIONS
+from app.db.pii import mask_personal_data
 from app.db.session import SessionLocal
 from app.models.user_profiles import UserProfile
 from app.models.users import AuthSession, User
@@ -37,6 +39,13 @@ class CurrentUser:
     role: str
     # "aal2" once an authenticator code was verified on this session.
     aal: str = "aal1"
+    # Filled by `require_admin`: what the caller's roles allow. Everything
+    # for a superadmin. None outside the admin routes.
+    permissions: frozenset[str] | None = None
+
+    @property
+    def is_superadmin(self) -> bool:
+        return self.role == "superadmin"
 
 
 def require_bearer(
@@ -122,14 +131,17 @@ def get_current_user(
 CurrentUserDep = Annotated[CurrentUser, Depends(get_current_user)]
 
 
+STAFF_ROLES = frozenset({"admin", "superadmin"})
+
+
 def require_admin_role(current_user: CurrentUserDep) -> CurrentUser:
-    """Admin role, signed in with a password only.
+    """Admin or superadmin, signed in with a password only.
 
     For the second-factor routes alone (`/admin/mfa/*`): they are how a
     password-only session becomes a two-factor one, so they cannot demand
     the second factor themselves. Everything else uses `require_admin`.
     """
-    if current_user.role != "admin":
+    if current_user.role not in STAFF_ROLES:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin privileges required",
@@ -157,6 +169,21 @@ def has_verified_mfa_factor(db: Session, user_id: uuid.UUID) -> bool:
     )
 
 
+def load_permissions(db: Session, user_id: uuid.UUID) -> frozenset[str]:
+    """The union of what every role the person holds allows. One query."""
+    return frozenset(
+        db.execute(
+            text(
+                "SELECT DISTINCT p.permission_key "
+                "FROM user_admin_roles u "
+                "JOIN admin_role_permissions p ON p.admin_role_id = u.admin_role_id "
+                "WHERE u.user_id = :uid"
+            ),
+            {"uid": user_id},
+        ).scalars()
+    )
+
+
 def require_admin(current_user: AdminRoleDep, db: DbSession) -> CurrentUser:
     """Guard for admin routes: admin role *and* an authenticator code.
 
@@ -170,6 +197,15 @@ def require_admin(current_user: AdminRoleDep, db: DbSession) -> CurrentUser:
     screen to show: set up an authenticator first, or enter its code.
     """
     if current_user.aal == "aal2":
+        # Read on every request, never from the token: a role edited or taken
+        # away applies from the next request, not when the token expires.
+        current_user.permissions = (
+            ALL_PERMISSIONS if current_user.is_superadmin else load_permissions(db, current_user.id)
+        )
+        if not current_user.is_superadmin:
+            # Last, after everything that reads auth.* for the caller: from
+            # here on the database itself masks personal data (app/db/pii.py).
+            mask_personal_data(db)
         return current_user
 
     if has_verified_mfa_factor(db, current_user.id):
@@ -183,3 +219,51 @@ def require_admin(current_user: AdminRoleDep, db: DbSession) -> CurrentUser:
 
 
 AdminUserDep = Annotated[CurrentUser, Depends(require_admin)]
+
+
+def require_permission(*any_of: str):
+    """Route guard: an admin at aal2 holding at least one of `any_of`.
+
+    This is the check that counts. The console hides what a person cannot
+    use, but a token sent straight to the API meets this first.
+    """
+    unknown = set(any_of) - ALL_PERMISSIONS
+    if not any_of or unknown:
+        # A typo here would lock everyone but superadmins out of a route.
+        raise ValueError(f"unknown permission(s): {sorted(unknown) or 'none given'}")
+
+    def guard(current_user: AdminUserDep) -> CurrentUser:
+        held = current_user.permissions or frozenset()
+        if not held.intersection(any_of):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "permission_denied",
+                    "message": "Bạn không có quyền thực hiện thao tác này",
+                    "permissions": list(any_of),
+                },
+            )
+        return current_user
+
+    return guard
+
+
+def requires(*any_of: str):
+    """`requires("foods.update")` as a parameter annotation."""
+    return Annotated[CurrentUser, Depends(require_permission(*any_of))]
+
+
+def require_superadmin(current_user: AdminUserDep) -> CurrentUser:
+    """Managing roles and assigning them: a superadmin at aal2, nobody else."""
+    if not current_user.is_superadmin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "superadmin_required",
+                "message": "Chỉ quản trị viên cấp cao được thực hiện thao tác này",
+            },
+        )
+    return current_user
+
+
+SuperAdminDep = Annotated[CurrentUser, Depends(require_superadmin)]

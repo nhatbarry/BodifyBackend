@@ -1,7 +1,9 @@
 """Admin console: muscle groups, equipment, food categories, and the option
 lists the exercise and food forms pick from.
 
-Every route requires an admin at aal2 (`AdminUserDep`). These are small
+Every route requires an admin at aal2 holding the matching permission:
+muscle groups and equipment are part of `exercises.*`, food categories of
+`foods.*`. These are small
 tables (tens of rows), so lists are returned whole, not paged.
 """
 
@@ -11,7 +13,7 @@ from fastapi import APIRouter, Response, status
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import AdminUserDep, DbSession
+from app.api.dependencies import DbSession, requires
 from app.models.equipment import Equipment
 from app.models.exercise_equipment import ExerciseEquipment
 from app.models.exercise_muscles import ExerciseMuscle
@@ -34,6 +36,17 @@ from app.schemas.admin_catalog import (
 from app.services.admin_common import committing, conflict, not_found
 
 router = APIRouter(prefix="/admin", tags=["admin-catalog"])
+
+ExercisesView = requires("exercises.view")
+ExercisesCreate = requires("exercises.create")
+ExercisesUpdate = requires("exercises.update")
+ExercisesDelete = requires("exercises.delete")
+FoodsView = requires("foods.view")
+FoodsCreate = requires("foods.create")
+FoodsUpdate = requires("foods.update")
+FoodsDelete = requires("foods.delete")
+# The exercise form and the food form both pick from this list.
+CatalogReader = requires("exercises.view", "foods.view")
 
 TRACKING_TYPES = ["reps", "duration", "distance", "reps_duration"]
 MEDIA_TYPES = ["thumbnail", "icon", "video", "image"]
@@ -102,7 +115,7 @@ def _distinct_values(db: Session, column) -> list[str]:
 
 
 @router.get("/catalog-options", response_model=CatalogOptions)
-def catalog_options(_: AdminUserDep, db: DbSession) -> CatalogOptions:
+def catalog_options(_: CatalogReader, db: DbSession) -> CatalogOptions:
     def term_items(model, id_col, ts_col) -> list[OptionItem]:
         vi = select(ts_col.label("oid"), TermTranslation.name).where(
             TermTranslation.language == "vi", ts_col.is_not(None)
@@ -203,17 +216,17 @@ def _check_parent(db: Session, muscle_id: int | None, parent_id: int | None) -> 
 
 
 @router.get("/muscle-groups", response_model=list[MuscleGroupRead])
-def list_muscle_groups(_: AdminUserDep, db: DbSession) -> list[MuscleGroupRead]:
+def list_muscle_groups(_: ExercisesView, db: DbSession) -> list[MuscleGroupRead]:
     return _muscle_reads(db)
 
 
 @router.get("/muscle-groups/{muscle_id}", response_model=MuscleGroupRead)
-def get_muscle_group(muscle_id: int, _: AdminUserDep, db: DbSession) -> MuscleGroupRead:
+def get_muscle_group(muscle_id: int, _: ExercisesView, db: DbSession) -> MuscleGroupRead:
     return _muscle_read(db, muscle_id)
 
 
 @router.post("/muscle-groups", response_model=MuscleGroupRead, status_code=status.HTTP_201_CREATED)
-def create_muscle_group(payload: MuscleGroupWrite, _: AdminUserDep, db: DbSession) -> MuscleGroupRead:
+def create_muscle_group(payload: MuscleGroupWrite, _: ExercisesCreate, db: DbSession) -> MuscleGroupRead:
     _check_parent(db, None, payload.parent_id)
     with committing(db):
         row = MuscleGroup(name=payload.name, parent_id=payload.parent_id, description=payload.description)
@@ -225,7 +238,7 @@ def create_muscle_group(payload: MuscleGroupWrite, _: AdminUserDep, db: DbSessio
 
 @router.put("/muscle-groups/{muscle_id}", response_model=MuscleGroupRead)
 def update_muscle_group(
-    muscle_id: int, payload: MuscleGroupWrite, _: AdminUserDep, db: DbSession
+    muscle_id: int, payload: MuscleGroupWrite, _: ExercisesUpdate, db: DbSession
 ) -> MuscleGroupRead:
     row = db.get(MuscleGroup, muscle_id)
     if row is None:
@@ -240,7 +253,7 @@ def update_muscle_group(
 
 
 @router.delete("/muscle-groups/{muscle_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_muscle_group(muscle_id: int, _: AdminUserDep, db: DbSession) -> Response:
+def delete_muscle_group(muscle_id: int, _: ExercisesDelete, db: DbSession) -> Response:
     """Refused while in use. The foreign key from exercise_muscles cascades,
     so deleting would silently strip the muscle from every exercise."""
     current = _muscle_read(db, muscle_id)
@@ -288,17 +301,17 @@ def _equipment_read(db: Session, equipment_id: int) -> EquipmentRead:
 
 
 @router.get("/equipment", response_model=list[EquipmentRead])
-def list_equipment(_: AdminUserDep, db: DbSession) -> list[EquipmentRead]:
+def list_equipment(_: ExercisesView, db: DbSession) -> list[EquipmentRead]:
     return _equipment_reads(db)
 
 
 @router.get("/equipment/{equipment_id}", response_model=EquipmentRead)
-def get_equipment(equipment_id: int, _: AdminUserDep, db: DbSession) -> EquipmentRead:
+def get_equipment(equipment_id: int, _: ExercisesView, db: DbSession) -> EquipmentRead:
     return _equipment_read(db, equipment_id)
 
 
 @router.post("/equipment", response_model=EquipmentRead, status_code=status.HTTP_201_CREATED)
-def create_equipment(payload: EquipmentWrite, _: AdminUserDep, db: DbSession) -> EquipmentRead:
+def create_equipment(payload: EquipmentWrite, _: ExercisesCreate, db: DbSession) -> EquipmentRead:
     with committing(db):
         row = Equipment(name=payload.name, category=payload.category, description=payload.description)
         db.add(row)
@@ -309,7 +322,7 @@ def create_equipment(payload: EquipmentWrite, _: AdminUserDep, db: DbSession) ->
 
 @router.put("/equipment/{equipment_id}", response_model=EquipmentRead)
 def update_equipment(
-    equipment_id: int, payload: EquipmentWrite, _: AdminUserDep, db: DbSession
+    equipment_id: int, payload: EquipmentWrite, _: ExercisesUpdate, db: DbSession
 ) -> EquipmentRead:
     row = db.get(Equipment, equipment_id)
     if row is None:
@@ -323,7 +336,7 @@ def update_equipment(
 
 
 @router.delete("/equipment/{equipment_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_equipment(equipment_id: int, _: AdminUserDep, db: DbSession) -> Response:
+def delete_equipment(equipment_id: int, _: ExercisesDelete, db: DbSession) -> Response:
     current = _equipment_read(db, equipment_id)
     if current.exercise_count:
         raise conflict(f"Đang được gán cho {current.exercise_count} bài tập; hãy gỡ khỏi các bài tập đó trước")
@@ -364,17 +377,17 @@ def _category_read(db: Session, category_id: int) -> FoodCategoryRead:
 
 
 @router.get("/food-categories", response_model=list[FoodCategoryRead])
-def list_food_categories(_: AdminUserDep, db: DbSession) -> list[FoodCategoryRead]:
+def list_food_categories(_: FoodsView, db: DbSession) -> list[FoodCategoryRead]:
     return _category_reads(db)
 
 
 @router.get("/food-categories/{category_id}", response_model=FoodCategoryRead)
-def get_food_category(category_id: int, _: AdminUserDep, db: DbSession) -> FoodCategoryRead:
+def get_food_category(category_id: int, _: FoodsView, db: DbSession) -> FoodCategoryRead:
     return _category_read(db, category_id)
 
 
 @router.post("/food-categories", response_model=FoodCategoryRead, status_code=status.HTTP_201_CREATED)
-def create_food_category(payload: FoodCategoryWrite, _: AdminUserDep, db: DbSession) -> FoodCategoryRead:
+def create_food_category(payload: FoodCategoryWrite, _: FoodsCreate, db: DbSession) -> FoodCategoryRead:
     with committing(db):
         row = FoodCategory(**payload.model_dump())
         db.add(row)
@@ -384,7 +397,7 @@ def create_food_category(payload: FoodCategoryWrite, _: AdminUserDep, db: DbSess
 
 @router.put("/food-categories/{category_id}", response_model=FoodCategoryRead)
 def update_food_category(
-    category_id: int, payload: FoodCategoryWrite, _: AdminUserDep, db: DbSession
+    category_id: int, payload: FoodCategoryWrite, _: FoodsUpdate, db: DbSession
 ) -> FoodCategoryRead:
     row = db.get(FoodCategory, category_id)
     if row is None:
@@ -396,7 +409,7 @@ def update_food_category(
 
 
 @router.delete("/food-categories/{category_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_food_category(category_id: int, _: AdminUserDep, db: DbSession) -> Response:
+def delete_food_category(category_id: int, _: FoodsDelete, db: DbSession) -> Response:
     """Foods in it stay; their category becomes empty (ON DELETE SET NULL)."""
     _category_read(db, category_id)
     with committing(db):

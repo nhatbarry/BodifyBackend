@@ -8,6 +8,7 @@ from app.api.endpoints import (
     admin_exercises,
     admin_foods,
     admin_mfa,
+    admin_roles,
     admin_users,
     ai_coach,
     auth,
@@ -96,6 +97,8 @@ app.include_router(admin_catalog.router, prefix=API_V1_PREFIX)
 app.include_router(admin_exercises.router, prefix=API_V1_PREFIX)
 app.include_router(admin_foods.router, prefix=API_V1_PREFIX)
 app.include_router(admin_users.router, prefix=API_V1_PREFIX)
+# Roles and permissions: the caller's own (/admin/me), and for superadmins the rest.
+app.include_router(admin_roles.router, prefix=API_V1_PREFIX)
 
 
 @app.get("/")

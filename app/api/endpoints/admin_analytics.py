@@ -1,6 +1,7 @@
 """Admin dashboard: analytics and operating costs. Read-only.
 
-Every route requires an admin (`AdminUserDep`); hiding the page in the
+Every route requires an admin at aal2 holding the page's permission
+(`dashboard.view`, `analytics.view`, `costs.view`); hiding the page in the
 browser is navigation, not authorization.
 """
 
@@ -9,7 +10,7 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from app.api.dependencies import AdminUserDep, DbSession
+from app.api.dependencies import AdminUserDep, DbSession, requires
 from app.schemas.admin_analytics import (
     ActiveUsersPoint,
     AiUsageRead,
@@ -29,6 +30,12 @@ from app.services import cost_simulation
 from app.services.admin_analytics import MAX_DAYS, Scope, Window
 
 router = APIRouter(prefix="/admin", tags=["admin-analytics"])
+
+DashboardView = requires("dashboard.view")
+AnalyticsView = requires("analytics.view")
+CostsView = requires("costs.view")
+# Both pages draw the nutrition chart.
+DashboardOrAnalytics = requires("dashboard.view", "analytics.view")
 
 Language = Literal["vi", "en"]
 
@@ -55,39 +62,40 @@ WindowDep = Annotated[Window, Depends(analytics_window)]
 
 
 @router.get("/analytics/overview", response_model=OverviewRead, response_model_by_alias=True)
-def get_overview(db: DbSession, window: WindowDep) -> dict:
+def get_overview(_: DashboardView, db: DbSession, window: WindowDep) -> dict:
     return analytics.overview(db, window)
 
 
 @router.get("/analytics/growth", response_model=list[GrowthPoint])
-def get_growth(db: DbSession, window: WindowDep) -> list[dict]:
+def get_growth(_: DashboardView, db: DbSession, window: WindowDep) -> list[dict]:
     return analytics.growth(db, window)
 
 
 @router.get("/analytics/active-users", response_model=list[ActiveUsersPoint])
-def get_active_users(db: DbSession, window: WindowDep) -> list[dict]:
+def get_active_users(_: DashboardView, db: DbSession, window: WindowDep) -> list[dict]:
     return analytics.active_users(db, window)
 
 
 @router.get("/analytics/workouts", response_model=list[WorkoutsPoint])
-def get_workouts(db: DbSession, window: WindowDep) -> list[dict]:
+def get_workouts(_: DashboardView, db: DbSession, window: WindowDep) -> list[dict]:
     return analytics.workouts(db, window)
 
 
 @router.get("/analytics/nutrition", response_model=list[NutritionPoint])
-def get_nutrition(db: DbSession, window: WindowDep) -> list[dict]:
+def get_nutrition(_: DashboardOrAnalytics, db: DbSession, window: WindowDep) -> list[dict]:
     return analytics.nutrition(db, window)
 
 
 @router.get("/analytics/muscle-distribution", response_model=list[MuscleShare])
 def get_muscle_distribution(
-    db: DbSession, window: WindowDep, language: Language = "vi"
+    _: AnalyticsView, db: DbSession, window: WindowDep, language: Language = "vi"
 ) -> list[dict]:
     return analytics.muscle_distribution(db, window, language)
 
 
 @router.get("/analytics/top-exercises", response_model=list[TopExercise])
 def get_top_exercises(
+    _: AnalyticsView,
     db: DbSession,
     window: WindowDep,
     language: Language = "vi",
@@ -98,6 +106,7 @@ def get_top_exercises(
 
 @router.get("/analytics/retention", response_model=list[RetentionCohort])
 def get_retention(
+    _: AnalyticsView,
     db: DbSession,
     window: WindowDep,
     months: Annotated[int, Query(ge=2, le=24)] = 12,
@@ -106,21 +115,21 @@ def get_retention(
 
 
 @router.get("/analytics/feature-adoption", response_model=FeatureAdoptionRead)
-def get_feature_adoption(db: DbSession, window: WindowDep) -> dict:
+def get_feature_adoption(_: AnalyticsView, db: DbSession, window: WindowDep) -> dict:
     return analytics.feature_adoption(db, window)
 
 
 @router.get("/costs/ai-usage", response_model=AiUsageRead)
-def get_ai_usage(db: DbSession, window: WindowDep) -> dict:
+def get_ai_usage(_: CostsView, db: DbSession, window: WindowDep) -> dict:
     return analytics.ai_usage(db, window)
 
 
 @router.get("/costs/infrastructure", response_model=InfrastructureRead)
-def get_infrastructure(_: AdminUserDep, db: DbSession) -> dict:
+def get_infrastructure(_: CostsView, db: DbSession) -> dict:
     return {"database_bytes": analytics.database_size(db)}
 
 
 @router.get("/costs/simulated", response_model=SimulatedCostsRead)
-def get_simulated_costs(db: DbSession, window: WindowDep) -> dict:
+def get_simulated_costs(_: CostsView, db: DbSession, window: WindowDep) -> dict:
     """What the range would cost on paid plans. Example prices, no free tier."""
     return cost_simulation.simulate(db, window)

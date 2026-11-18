@@ -321,10 +321,14 @@ def test_listing_and_changing_roles(client: TestClient, admin: dict, credentials
     own = client.patch(f"{API}/admin/users/{_user_id(admin['email'])}/role", headers=h, json={"role": "user"})
     assert own.status_code == 409
 
-    promoted = client.patch(f"{API}/admin/users/{row['user_id']}/role", headers=h, json={"role": "admin"})
-    assert promoted.status_code == 200 and promoted.json()["role"] == "admin"
-    admins = client.get(f"{API}/admin/users", headers=h, params={"role": "admin", "search": other["email"]}).json()
-    assert admins["total"] == 1
+    # "admin" is no longer set directly: it is holding a role (test_admin_roles.py).
+    assert client.patch(
+        f"{API}/admin/users/{row['user_id']}/role", headers=h, json={"role": "admin"}
+    ).status_code == 422
+    promoted = client.patch(f"{API}/admin/users/{row['user_id']}/role", headers=h, json={"role": "superadmin"})
+    assert promoted.status_code == 200 and promoted.json()["role"] == "superadmin"
+    staff = client.get(f"{API}/admin/users", headers=h, params={"role": "staff", "search": other["email"]}).json()
+    assert staff["total"] == 1
 
     demoted = client.patch(f"{API}/admin/users/{row['user_id']}/role", headers=h, json={"role": "user"})
     assert demoted.json()["role"] == "user"

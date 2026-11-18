@@ -33,10 +33,14 @@ def _totp(secret: str, at: float | None = None) -> str:
 
 
 def _make_admin(email: str) -> None:
+    """Give the account the whole console: a superadmin holds every permission.
+
+    Narrower admins are made through the roles API (tests/test_admin_roles.py).
+    """
     with SessionLocal() as db:
         db.execute(
             text(
-                "UPDATE user_profiles SET role = 'admin' "
+                "UPDATE user_profiles SET role = 'superadmin' "
                 "WHERE user_id = (SELECT id FROM auth.users WHERE email = :e)"
             ),
             {"e": email},

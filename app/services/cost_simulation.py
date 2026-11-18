@@ -1,18 +1,16 @@
 """What Bodify would cost if every service were billed, for the admin console.
 
 Every service Bodify runs on is on a free plan, so the real bill is $0. The
-console's cost page shows a **simulation** instead: what the same usage would
-cost on paid plans, with every unit billed from the first one. Free
-allowances and the usage a plan includes are deliberately ignored (the
-user's decision, 2026-11-18), otherwise almost every line would read $0.
+console's cost page shows a **simulation** instead: pay-as-you-go, usage times
+unit price, with no plan fee, no free allowance and no included usage (the
+user's decision, 2026-11-18). Every unit is billed from the first one.
 
 Each line says where its quantity comes from:
 
 * ``measured``: counted from Bodify's own rows (active users, Gemini requests,
   photo uploads, database size);
-* ``assumed``: a figure set below, because nothing records it (CPU, RAM,
-  egress, R2 storage, tokens per request);
-* ``plan``: a fixed monthly fee, charged per day as monthly / 30.
+* ``assumed``: a figure set below, because nothing records it (compute,
+  CPU, RAM, egress, R2 storage, tokens per request).
 
 Prices are examples, not quotes: they were written down from memory on
 2026-11-18 and are meant to be edited here. Costs are computed per day, so
@@ -39,12 +37,11 @@ GB = 1024**3
 
 # --- Example prices (USD) -------------------------------------------------------
 
-SUPABASE_PRO_MONTHLY = 25.0
+SUPABASE_COMPUTE_PER_HOUR = 0.01344  # Micro instance, billed hourly
 SUPABASE_DB_PER_GB_MONTH = 0.125
 SUPABASE_PER_MAU = 0.00325
 SUPABASE_EGRESS_PER_GB = 0.09
 
-RAILWAY_HOBBY_MONTHLY = 5.0
 RAILWAY_PER_VCPU_MONTH = 20.0
 RAILWAY_PER_GB_RAM_MONTH = 10.0
 RAILWAY_EGRESS_PER_GB = 0.05
@@ -75,7 +72,7 @@ COACH_REQUESTS_PER_REPLY = 2  # one reply is 1 to 4 Gemini rounds with tools
 COACH_TOKENS = (3000, 600)  # (input, output) per request: history + context
 PHOTO_TOKENS = (1500, 400)  # image + prompt in, JSON draft out
 
-Basis = Literal["measured", "assumed", "plan"]
+Basis = Literal["measured", "assumed"]
 
 
 @dataclass(frozen=True)
@@ -95,8 +92,8 @@ def _gemini_price(model: str) -> tuple[float, float]:
 
 
 PROVIDERS: list[dict[str, str]] = [
-    {"key": "supabase", "name": "Supabase", "plan": "Pro", "used_for": "Postgres, đăng nhập (Auth)"},
-    {"key": "railway", "name": "Railway", "plan": "Hobby", "used_for": "Máy chủ API (FastAPI)"},
+    {"key": "supabase", "name": "Supabase", "plan": "Trả theo dùng", "used_for": "Postgres, đăng nhập (Auth)"},
+    {"key": "railway", "name": "Railway", "plan": "Trả theo dùng", "used_for": "Máy chủ API (FastAPI)"},
     {"key": "r2", "name": "Cloudflare R2", "plan": "Trả theo dùng", "used_for": "Ảnh, video bài tập; ảnh người dùng"},
     {"key": "gemini", "name": "Google Gemini", "plan": "Trả theo token", "used_for": "AI Coach, phân tích ảnh bữa ăn"},
 ]
@@ -106,8 +103,8 @@ def _lines() -> list[Line]:
     coach_in, coach_out = _gemini_price(settings.gemini_model)
     photo_in, photo_out = _gemini_price(settings.vision_model)
     return [
-        Line("supabase", "supabase_plan", "Phí gói Pro", "tháng", "tháng", SUPABASE_PRO_MONTHLY, "plan",
-             f"${SUPABASE_PRO_MONTHLY:g}/tháng, tính theo ngày."),
+        Line("supabase", "supabase_compute", "Compute", "giờ", "giờ", SUPABASE_COMPUTE_PER_HOUR, "assumed",
+             "Một instance Micro chạy liên tục."),
         Line("supabase", "supabase_db", "Dung lượng cơ sở dữ liệu", "GB-tháng", "GB-tháng",
              SUPABASE_DB_PER_GB_MONTH, "measured",
              "Dung lượng hiện tại, áp cho mọi ngày trong khoảng."),
@@ -116,8 +113,6 @@ def _lines() -> list[Line]:
              "MAU 30 ngày của từng ngày, cộng lại rồi chia 30."),
         Line("supabase", "supabase_egress", "Băng thông ra (egress)", "GB", "GB", SUPABASE_EGRESS_PER_GB,
              "assumed", f"{SUPABASE_EGRESS_MB_PER_DAU:g} MB cho mỗi người hoạt động mỗi ngày."),
-        Line("railway", "railway_plan", "Phí gói Hobby", "tháng", "tháng", RAILWAY_HOBBY_MONTHLY, "plan",
-             f"${RAILWAY_HOBBY_MONTHLY:g}/tháng, tính theo ngày."),
         Line("railway", "railway_cpu", "CPU", "vCPU-tháng", "vCPU-tháng", RAILWAY_PER_VCPU_MONTH, "assumed",
              f"Trung bình {RAILWAY_VCPU:g} vCPU chạy liên tục."),
         Line("railway", "railway_ram", "RAM", "GB-tháng", "GB-tháng", RAILWAY_PER_GB_RAM_MONTH, "assumed",
@@ -153,11 +148,10 @@ def _quantities(dau: int, mau: int, coach: int, photo_ok: int, photo_failed: int
     coach_requests = coach * COACH_REQUESTS_PER_REPLY
     photos = photo_ok + photo_failed
     return {
-        "supabase_plan": month,
+        "supabase_compute": 24,
         "supabase_db": db_gb * month,
         "supabase_mau": mau * month,
         "supabase_egress": dau * SUPABASE_EGRESS_MB_PER_DAU / MB_PER_GB,
-        "railway_plan": month,
         "railway_cpu": RAILWAY_VCPU * month,
         "railway_ram": RAILWAY_RAM_GB * month,
         "railway_egress": dau * RAILWAY_EGRESS_MB_PER_DAU / MB_PER_GB,

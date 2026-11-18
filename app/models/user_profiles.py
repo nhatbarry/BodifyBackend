@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 class UserProfile(Base):
     __tablename__ = "user_profiles"
     __table_args__ = (
-        CheckConstraint("role IN ('user', 'admin')", name="chk_user_profiles_role"),
+        CheckConstraint("role IN ('user', 'admin', 'superadmin')", name="chk_user_profiles_role"),
     )
 
     profile_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)

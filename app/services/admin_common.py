@@ -18,6 +18,11 @@ _CONSTRAINT_MESSAGES = {
     "uq_foods_source_code": "Đã có thực phẩm với nguồn và mã này",
     "uq_foods_source": "Đã có thực phẩm với nguồn và mã này",
     "fk_muscle_groups_parent": "Nhóm cơ cha không tồn tại",
+    "uq_admin_roles_name": "Đã có vai trò mang tên này",
+    "chk_admin_roles_name": "Tên vai trò không được để trống",
+    "fk_user_admin_roles_role": "Vai trò không tồn tại hoặc vừa bị xoá",
+    "fk_user_admin_roles_user": "Tài khoản này chưa có hồ sơ (chưa từng mở ứng dụng)",
+    "fk_admin_role_permissions_permission": "Quyền chưa có trong cơ sở dữ liệu; hãy chạy ddl_admin_roles.sql",
 }
 
 
