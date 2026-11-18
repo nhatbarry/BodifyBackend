@@ -144,3 +144,59 @@ class AiUsageRead(BaseModel):
 
 class InfrastructureRead(BaseModel):
     database_bytes: int
+
+
+class CostLine(BaseModel):
+    key: str
+    item: str
+    quantity: float
+    unit: str
+    unit_price_usd: float
+    price_unit: str
+    cost_usd: float
+    basis: Literal["measured", "assumed", "plan"]
+    note: str
+
+
+class ProviderCost(BaseModel):
+    key: Literal["supabase", "railway", "r2", "gemini"]
+    name: str
+    plan: str
+    used_for: str
+    total_usd: float
+    lines: list[CostLine]
+
+
+class CostDay(BaseModel):
+    day: date
+    supabase: float
+    railway: float
+    r2: float
+    gemini: float
+    total: float
+
+
+class SimulatedAi(BaseModel):
+    requests: int
+    input_tokens: int
+    output_tokens: int
+    cost_usd: float
+
+
+class SimulatedInfrastructure(BaseModel):
+    r2_storage_gb: float
+    railway_vcpu: float
+    railway_ram_gb: float
+    server_hours: int
+
+
+class SimulatedCostsRead(BaseModel):
+    simulated: bool = Field(description="Always true: every service is on a free plan")
+    prices_as_of: str
+    usd_to_vnd: int
+    days: int
+    total_usd: float
+    providers: list[ProviderCost]
+    daily: list[CostDay]
+    ai: SimulatedAi
+    infrastructure: SimulatedInfrastructure

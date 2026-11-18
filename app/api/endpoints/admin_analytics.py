@@ -20,10 +20,12 @@ from app.schemas.admin_analytics import (
     NutritionPoint,
     OverviewRead,
     RetentionCohort,
+    SimulatedCostsRead,
     TopExercise,
     WorkoutsPoint,
 )
 from app.services import admin_analytics as analytics
+from app.services import cost_simulation
 from app.services.admin_analytics import MAX_DAYS, Scope, Window
 
 router = APIRouter(prefix="/admin", tags=["admin-analytics"])
@@ -116,3 +118,9 @@ def get_ai_usage(db: DbSession, window: WindowDep) -> dict:
 @router.get("/costs/infrastructure", response_model=InfrastructureRead)
 def get_infrastructure(_: AdminUserDep, db: DbSession) -> dict:
     return {"database_bytes": analytics.database_size(db)}
+
+
+@router.get("/costs/simulated", response_model=SimulatedCostsRead)
+def get_simulated_costs(db: DbSession, window: WindowDep) -> dict:
+    """What the range would cost on paid plans. Example prices, no free tier."""
+    return cost_simulation.simulate(db, window)
